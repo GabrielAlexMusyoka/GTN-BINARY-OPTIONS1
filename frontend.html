@@ -1,0 +1,3057 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GTN Binary Options — Synthetic Volatility & Digit Trading Terminal</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google Fonts: Inter & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        cyber: {
+                            bg: '#09110e',
+                            card: '#111d17',
+                            cardHover: '#16261e',
+                            border: '#1a2c24',
+                            mint: '#00ffc4',
+                            mintDark: '#00cca0',
+                        }
+                    }
+                }
+            }
+        };
+    </script>
+    <style>
+        body {
+            background-color: #09110e;
+            color: #e6f2ed;
+            font-family: 'Inter', sans-serif;
+            overflow-x: hidden;
+        }
+        .tabular-nums {
+            font-variant-numeric: tabular-nums;
+        }
+        .mint-glow {
+            box-shadow: 0 0 20px rgba(0, 255, 196, 0.28);
+        }
+        .mint-glow-sm {
+            box-shadow: 0 0 12px rgba(0, 255, 196, 0.22);
+        }
+        /* Sleek Cyber Scrollbar */
+        ::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #09110e;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1a2c24;
+            border-radius: 999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #274236;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-[#09110e] text-[#e6f2ed] selection:bg-[#00ffc4]/25 selection:text-[#00ffc4]">
+
+    <!-- =====================================================================
+         TOAST NOTIFICATION BANNER (Replaces alert/confirm)
+         ===================================================================== -->
+    <div id="toast-container" class="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none max-w-xs sm:max-w-sm"></div>
+
+    <!-- =====================================================================
+         SCREEN 1: AUTHENTICATION / REGISTRATION ("Create account" + "Log In")
+         ===================================================================== -->
+    <section id="view-auth" class="min-h-screen flex flex-col justify-center items-center px-4 py-8 bg-[#09110e]">
+        <div class="w-full max-w-md">
+            <!-- Brand Header -->
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-10 h-10 rounded-xl bg-[#00ffc4]/15 border border-[#00ffc4]/40 flex items-center justify-center mint-glow-sm">
+                        <i data-lucide="candlestick-chart" class="w-5 h-5 text-[#00ffc4]"></i>
+                    </div>
+                    <div>
+                        <span class="font-extrabold text-lg tracking-tight text-white">GTN <span class="text-[#00ffc4]">Binary Options</span></span>
+                        <p class="text-[11px] font-mono text-emerald-300/60">80% Fixed Profit • $5 Min Deposit</p>
+                    </div>
+                </div>
+                <button type="button" onclick="continueAsDemoGuest()"
+                    class="text-xs font-mono font-semibold text-[#00ffc4] hover:underline px-2.5 py-1.5 rounded-lg bg-[#111d17] border border-[#1a2c24] cursor-pointer">
+                    Demo Guest →
+                </button>
+            </div>
+
+            <!-- Auth Card -->
+            <div class="bg-[#111d17] border border-[#1a2c24] rounded-3xl p-6 sm:p-7 shadow-2xl">
+                <!-- Mode Switcher Tabs -->
+                <div class="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[#09110e] border border-[#1a2c24] mb-6 text-xs font-bold">
+                    <button type="button" id="auth-tab-register" onclick="switchAuthMode('register')"
+                        class="py-2.5 rounded-lg bg-[#00ffc4] text-[#09110e] transition cursor-pointer">
+                        Create Account
+                    </button>
+                    <button type="button" id="auth-tab-login" onclick="switchAuthMode('login')"
+                        class="py-2.5 rounded-lg text-emerald-200/70 hover:text-white transition cursor-pointer">
+                        Log In
+                    </button>
+                </div>
+
+                <div class="mb-5">
+                    <h1 id="auth-heading" class="text-2xl font-extrabold text-white tracking-tight">Create account</h1>
+                    <p id="auth-subheading" class="text-xs text-emerald-200/65 mt-1">Fill in your details to get started on GTN Binary Options</p>
+                </div>
+
+                <form id="auth-form" onsubmit="handleAuthSubmit(event)" class="space-y-4">
+                    <!-- Full Name (Register only) -->
+                    <div id="field-fullname">
+                        <label class="block text-xs font-semibold text-emerald-100/90 mb-1.5">Full Name</label>
+                        <div class="flex items-center bg-[#09110e] border border-[#1a2c24] focus-within:border-[#00ffc4] rounded-xl px-3.5 py-3 transition">
+                            <i data-lucide="user" class="w-4 h-4 text-emerald-300/50 mr-2.5 shrink-0"></i>
+                            <input type="text" id="reg-name" placeholder="John Doe"
+                                class="w-full bg-transparent text-sm text-white placeholder-emerald-300/35 focus:outline-none">
+                        </div>
+                    </div>
+
+                    <!-- Email -->
+                    <div>
+                        <label class="block text-xs font-semibold text-emerald-100/90 mb-1.5">Email</label>
+                        <div class="flex items-center bg-[#09110e] border border-[#1a2c24] focus-within:border-[#00ffc4] rounded-xl px-3.5 py-3 transition">
+                            <i data-lucide="mail" class="w-4 h-4 text-emerald-300/50 mr-2.5 shrink-0"></i>
+                            <input type="email" id="reg-email" required placeholder="you@example.com"
+                                class="w-full bg-transparent text-sm text-white placeholder-emerald-300/35 focus:outline-none">
+                        </div>
+                    </div>
+
+                    <!-- Country Selector (Register only) -->
+                    <div id="field-country">
+                        <label class="block text-xs font-semibold text-emerald-100/90 mb-1.5">Country</label>
+                        <div class="relative">
+                            <select id="reg-country" onchange="updateCountryDialCode()"
+                                class="w-full appearance-none bg-[#00ffc4] text-[#09110e] font-bold text-sm rounded-xl px-4 py-3 pr-10 focus:outline-none cursor-pointer">
+                                <option value="KE" data-dial="+254" selected>KE   Kenya</option>
+                                <option value="UG" data-dial="+256">UG   Uganda</option>
+                                <option value="TZ" data-dial="+255">TZ   Tanzania</option>
+                                <option value="NG" data-dial="+234">NG   Nigeria</option>
+                                <option value="ZA" data-dial="+27">ZA   South Africa</option>
+                                <option value="GB" data-dial="+44">GB   United Kingdom</option>
+                                <option value="US" data-dial="+1">US   United States</option>
+                            </select>
+                            <i data-lucide="chevrons-up-down" class="w-4 h-4 text-[#09110e] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+                        </div>
+                    </div>
+
+                    <!-- Split Phone Number (Register only) -->
+                    <div id="field-phone">
+                        <label class="block text-xs font-semibold text-emerald-100/90 mb-1.5">Phone Number</label>
+                        <div class="flex gap-2">
+                            <div id="reg-dial-badge"
+                                class="px-3.5 py-3 rounded-xl bg-[#09110e] border border-[#1a2c24] font-mono text-sm font-bold text-emerald-100 flex items-center justify-center shrink-0">
+                                +254
+                            </div>
+                            <div class="flex-1 flex items-center bg-[#09110e] border border-[#1a2c24] focus-within:border-[#00ffc4] rounded-xl px-3.5 py-3 transition">
+                                <i data-lucide="phone" class="w-4 h-4 text-emerald-300/50 mr-2.5 shrink-0"></i>
+                                <input type="tel" id="reg-phone" placeholder="712345678"
+                                    class="w-full bg-transparent font-mono text-sm text-white placeholder-emerald-300/35 focus:outline-none">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Password with Eye Toggle -->
+                    <div>
+                        <label class="block text-xs font-semibold text-emerald-100/90 mb-1.5">Password</label>
+                        <div class="flex items-center bg-[#09110e] border border-[#1a2c24] focus-within:border-[#00ffc4] rounded-xl px-3.5 py-3 transition">
+                            <i data-lucide="lock" class="w-4 h-4 text-emerald-300/50 mr-2.5 shrink-0"></i>
+                            <input type="password" id="reg-password" required minlength="6" placeholder="Min 6 characters"
+                                class="w-full bg-transparent text-sm text-white placeholder-emerald-300/35 focus:outline-none">
+                            <button type="button" onclick="togglePasswordVisibility('reg-password', 'eye-reg-pass')"
+                                class="text-emerald-300/60 hover:text-[#00ffc4] ml-2 cursor-pointer">
+                                <i id="eye-reg-pass" data-lucide="eye" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Confirm Password (Register only) -->
+                    <div id="field-confirm-password">
+                        <label class="block text-xs font-semibold text-emerald-100/90 mb-1.5">Confirm Password</label>
+                        <div class="flex items-center bg-[#09110e] border border-[#1a2c24] focus-within:border-[#00ffc4] rounded-xl px-3.5 py-3 transition">
+                            <i data-lucide="lock" class="w-4 h-4 text-emerald-300/50 mr-2.5 shrink-0"></i>
+                            <input type="password" id="reg-confirm-password" placeholder="Repeat your password"
+                                class="w-full bg-transparent text-sm text-white placeholder-emerald-300/35 focus:outline-none">
+                            <button type="button" onclick="togglePasswordVisibility('reg-confirm-password', 'eye-reg-conf')"
+                                class="text-emerald-300/60 hover:text-[#00ffc4] ml-2 cursor-pointer">
+                                <i id="eye-reg-conf" data-lucide="eye" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Optional Referral Code (Register only) -->
+                    <div id="field-referral">
+                        <label class="block text-xs font-semibold text-emerald-100/90 mb-1.5">Referral Code (optional)</label>
+                        <div class="flex items-center bg-[#09110e] border border-[#1a2c24] focus-within:border-[#00ffc4] rounded-xl px-3.5 py-3 transition">
+                            <i data-lucide="gift" class="w-4 h-4 text-emerald-300/50 mr-2.5 shrink-0"></i>
+                            <input type="text" id="reg-referral" placeholder="e.g. GTN88X9"
+                                class="w-full bg-transparent font-mono uppercase text-sm text-white placeholder-emerald-300/35 focus:outline-none">
+                        </div>
+                    </div>
+
+                    <!-- Submit CTA -->
+                    <button type="submit" id="auth-submit-btn"
+                        class="w-full py-3.5 rounded-xl bg-[#00ffc4] hover:bg-[#00e6b0] text-[#09110e] font-extrabold text-sm tracking-wide mint-glow transition cursor-pointer mt-2">
+                        Create Account
+                    </button>
+                </form>
+
+                <!-- Continue as Demo Guest Footer -->
+                <div class="mt-5 pt-4 border-t border-[#1a2c24] text-center">
+                    <button type="button" onclick="continueAsDemoGuest()"
+                        class="text-xs text-emerald-200/70 hover:text-[#00ffc4] font-medium transition cursor-pointer">
+                        Want to test first? <span class="text-[#00ffc4] font-bold underline">Continue as Demo Guest ($1,000.00)</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- =====================================================================
+         MAIN APP SHELL (Header + Views + Bottom Bar)
+         ===================================================================== -->
+    <div id="app-shell" class="hidden min-h-screen flex flex-col pb-20">
+
+        <!-- =================================================================
+             2. TOP INSTITUTIONAL HEADER BAR
+             ================================================================= -->
+        <header class="sticky top-0 z-40 bg-[#09110e]/95 backdrop-blur-md border-b border-[#1a2c24] px-3 sm:px-5 py-2.5">
+            <div class="max-w-6xl mx-auto flex items-center justify-between gap-2">
+                
+                <!-- Left: Hamburger Menu + Brand -->
+                <div class="flex items-center gap-2.5">
+                    <button type="button" onclick="toggleSideMenu(true)" aria-label="Open Navigation Menu"
+                        class="p-2 rounded-xl bg-[#111d17] hover:bg-[#16261e] border border-[#1a2c24] text-emerald-100 transition cursor-pointer">
+                        <i data-lucide="menu" class="w-5 h-5"></i>
+                    </button>
+                    <button type="button" onclick="showMainView('trading')" class="flex items-center gap-1.5 text-left cursor-pointer">
+                        <span class="font-extrabold text-sm sm:text-base tracking-tight text-white">
+                            GTN <span class="text-[#00ffc4]">Binary</span>
+                        </span>
+                    </button>
+                </div>
+
+                <!-- Center: Demo / Live Account Switcher Pill -->
+                <div class="relative">
+                    <button type="button" onclick="toggleAccountDropdown()"
+                        class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#111d17] hover:bg-[#16261e] border border-[#1a2c24] transition cursor-pointer">
+                        <span id="header-acct-badge"
+                            class="w-6 h-6 rounded-full bg-amber-500 text-[#09110e] font-mono font-extrabold text-xs flex items-center justify-center">
+                            D
+                        </span>
+                        <span id="header-balance-display" class="font-mono font-extrabold text-sm text-white tabular-nums">
+                            $1,000.00
+                        </span>
+                        <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-emerald-300/70"></i>
+                    </button>
+
+                    <!-- Account Dropdown -->
+                    <div id="account-dropdown"
+                        class="hidden absolute left-1/2 -translate-x-1/2 mt-2 w-64 rounded-2xl bg-[#111d17] border border-[#1a2c24] shadow-2xl p-2 z-50 space-y-1.5">
+                        <button type="button" onclick="switchAccountType('DEMO')"
+                            class="w-full p-2.5 rounded-xl hover:bg-[#16261e] flex items-center justify-between text-left transition cursor-pointer">
+                            <div class="flex items-center gap-2.5">
+                                <span class="w-7 h-7 rounded-full bg-amber-500 text-[#09110e] font-mono font-extrabold text-xs flex items-center justify-center">D</span>
+                                <div>
+                                    <div class="text-xs font-bold text-white">Demo Account</div>
+                                    <div class="text-[10px] font-mono text-emerald-300/60">Virtual Practice Funds</div>
+                                </div>
+                            </div>
+                            <span id="dropdown-demo-bal" class="font-mono font-bold text-xs text-amber-400 tabular-nums">$1,000.00</span>
+                        </button>
+
+                        <button type="button" onclick="switchAccountType('LIVE')"
+                            class="w-full p-2.5 rounded-xl hover:bg-[#16261e] flex items-center justify-between text-left transition cursor-pointer">
+                            <div class="flex items-center gap-2.5">
+                                <span class="w-7 h-7 rounded-full bg-rose-500 text-white font-mono font-extrabold text-xs flex items-center justify-center">R</span>
+                                <div>
+                                    <div class="text-xs font-bold text-white">Live Real Account</div>
+                                    <div class="text-[10px] font-mono text-emerald-300/60">Min Dep $5 • Min Wdr $10</div>
+                                </div>
+                            </div>
+                            <span id="dropdown-live-bal" class="font-mono font-bold text-xs text-[#00ffc4] tabular-nums">$0.00</span>
+                        </button>
+
+                        <div class="pt-1 border-t border-[#1a2c24]">
+                            <button type="button" onclick="resetDemoBalance()"
+                                class="w-full py-1.5 text-[11px] font-mono text-emerald-300/70 hover:text-[#00ffc4] text-center cursor-pointer">
+                                ↻ Reset Demo to $1,000.00
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Sound Toggle + Deposit CTA + Notifications -->
+                <div class="flex items-center gap-1.5 sm:gap-2">
+                    <button type="button" onclick="toggleAudio()" title="Toggle Sound Effects"
+                        class="p-2 rounded-xl bg-[#111d17] hover:bg-[#16261e] border border-[#1a2c24] text-emerald-200/80 transition cursor-pointer">
+                        <i id="icon-sound" data-lucide="volume-2" class="w-4 h-4"></i>
+                    </button>
+
+                    <button type="button" onclick="openCashierModal('deposit')"
+                        class="px-3.5 py-2 rounded-xl bg-[#00ffc4] hover:bg-[#00e6b0] text-[#09110e] font-extrabold text-xs tracking-wide mint-glow-sm transition cursor-pointer">
+                        Deposit
+                    </button>
+
+                    <div class="relative">
+                        <button type="button" onclick="toggleNotifDropdown()" title="Notifications"
+                            class="p-2 rounded-xl bg-[#111d17] hover:bg-[#16261e] border border-[#1a2c24] text-emerald-200/80 transition cursor-pointer relative">
+                            <i data-lucide="bell" class="w-4 h-4"></i>
+                            <span id="notif-dot" class="w-2 h-2 rounded-full bg-[#00ffc4] absolute top-1.5 right-1.5"></span>
+                        </button>
+
+                        <!-- Notifications Dropdown -->
+                        <div id="notif-dropdown"
+                            class="hidden absolute right-0 mt-2 w-72 rounded-2xl bg-[#111d17] border border-[#1a2c24] shadow-2xl p-3 z-50">
+                            <div class="flex items-center justify-between pb-2 mb-2 border-b border-[#1a2c24]">
+                                <span class="text-xs font-bold text-white">Notifications</span>
+                                <span class="text-[10px] font-mono text-[#00ffc4]">80% Profit Active</span>
+                            </div>
+                            <div id="notif-list" class="space-y-2 max-h-56 overflow-y-auto text-xs">
+                                <div class="p-2 rounded-xl bg-[#09110e] border border-[#1a2c24]">
+                                    <div class="font-semibold text-[#00ffc4]">Welcome to GTN Binary Options</div>
+                                    <p class="text-[11px] text-emerald-200/65 mt-0.5">All contracts pay 80% fixed profit. Minimum Live deposit is $5.00; minimum withdrawal is $10.00.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- =================================================================
+             SLIDE-OUT NAVIGATION DRAWER ("GTN Binary Options Menu")
+             ================================================================= -->
+        <div id="side-drawer-overlay" onclick="toggleSideMenu(false)"
+            class="hidden fixed inset-0 bg-black/70 backdrop-blur-xs z-50"></div>
+
+        <aside id="side-drawer"
+            class="fixed top-0 left-0 bottom-0 w-72 max-w-[85vw] bg-[#0b1511] border-r border-[#1a2c24] z-50 transform -translate-x-full transition-transform duration-250 flex flex-col justify-between p-5">
+            
+            <div>
+                <!-- Drawer Header -->
+                <div class="flex items-center justify-between pb-5 border-b border-[#1a2c24]">
+                    <div class="font-extrabold text-base text-white">
+                        <span class="text-[#00ffc4]">GTN</span> Binary <span class="text-emerald-200/70 font-semibold">Menu</span>
+                    </div>
+                    <button type="button" onclick="toggleSideMenu(false)"
+                        class="p-1.5 rounded-lg text-emerald-200/70 hover:text-white hover:bg-[#111d17] cursor-pointer">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+
+                <!-- 7 Vertical Menu Links in Exact Order -->
+                <nav class="mt-4 space-y-1">
+                    <button type="button" onclick="drawerAction('deposit')"
+                        class="w-full flex items-center gap-3.5 px-3 py-3 rounded-xl hover:bg-[#111d17] text-sm font-medium text-emerald-100 transition cursor-pointer">
+                        <i data-lucide="arrow-down-to-line" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>Deposit</span>
+                    </button>
+                    <button type="button" onclick="drawerAction('withdraw')"
+                        class="w-full flex items-center gap-3.5 px-3 py-3 rounded-xl hover:bg-[#111d17] text-sm font-medium text-emerald-100 transition cursor-pointer">
+                        <i data-lucide="arrow-up-from-line" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>Withdraw</span>
+                    </button>
+                    <button type="button" onclick="drawerAction('history')"
+                        class="w-full flex items-center gap-3.5 px-3 py-3 rounded-xl hover:bg-[#111d17] text-sm font-medium text-emerald-100 transition cursor-pointer">
+                        <i data-lucide="clock" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>History</span>
+                    </button>
+                    <button type="button" onclick="drawerAction('guide')"
+                        class="w-full flex items-center gap-3.5 px-3 py-3 rounded-xl hover:bg-[#111d17] text-sm font-medium text-emerald-100 transition cursor-pointer">
+                        <i data-lucide="book-open" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>How to Trade</span>
+                    </button>
+                    <button type="button" onclick="drawerAction('refer')"
+                        class="w-full flex items-center gap-3.5 px-3 py-3 rounded-xl hover:bg-[#111d17] text-sm font-medium text-emerald-100 transition cursor-pointer">
+                        <i data-lucide="sparkles" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>Refer &amp; Earn</span>
+                    </button>
+                    <button type="button" onclick="drawerAction('account')"
+                        class="w-full flex items-center gap-3.5 px-3 py-3 rounded-xl hover:bg-[#111d17] text-sm font-medium text-emerald-100 transition cursor-pointer">
+                        <i data-lucide="user" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>Account</span>
+                    </button>
+                    <button type="button" onclick="drawerAction('chat')"
+                        class="w-full flex items-center gap-3.5 px-3 py-3 rounded-xl hover:bg-[#111d17] text-sm font-medium text-emerald-100 transition cursor-pointer">
+                        <i data-lucide="message-circle" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>Live Chat</span>
+                    </button>
+                </nav>
+            </div>
+
+            <!-- Drawer Bottom Support & Log Out -->
+            <div class="pt-4 border-t border-[#1a2c24] space-y-3">
+                <a href="https://wa.me/447412826815" target="_blank" rel="noopener noreferrer"
+                    class="flex items-center gap-3 px-2 py-1.5 rounded-xl hover:bg-[#111d17] transition">
+                    <span class="w-7 h-7 rounded-full bg-[#00ffc4]/15 border border-[#00ffc4]/40 flex items-center justify-center">
+                        <i data-lucide="message-square" class="w-3.5 h-3.5 text-[#00ffc4]"></i>
+                    </span>
+                    <div>
+                        <div class="text-[11px] text-emerald-300/60">WhatsApp Care</div>
+                        <div class="text-xs font-mono font-bold text-white">+447412826815</div>
+                    </div>
+                </a>
+
+                <a href="mailto:support@gtnbinary.com"
+                    class="flex items-center gap-3 px-2 py-1.5 rounded-xl hover:bg-[#111d17] transition">
+                    <span class="w-7 h-7 rounded-full bg-[#111d17] border border-[#1a2c24] flex items-center justify-center">
+                        <i data-lucide="mail" class="w-3.5 h-3.5 text-emerald-300/70"></i>
+                    </span>
+                    <div>
+                        <div class="text-[11px] text-emerald-300/60">Support</div>
+                        <div class="text-xs font-semibold text-white">support@gtnbinary.com</div>
+                    </div>
+                </a>
+
+                <button type="button" onclick="handleLogout()"
+                    class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-rose-500/15 text-rose-400 font-bold text-sm transition cursor-pointer">
+                    <i data-lucide="log-out" class="w-4 h-4"></i>
+                    <span>Log Out</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- =================================================================
+             3. MULTI-MODE TRADING TERMINAL VIEW
+             ================================================================= -->
+        <main id="view-trading" class="max-w-5xl w-full mx-auto px-3 sm:px-5 pt-3 space-y-3 flex-grow">
+            
+            <!-- Mode Selector Tabs: Rise/Fall, Even/Odd, Over/Under, Matches/Differs -->
+            <div class="grid grid-cols-4 gap-1.5 p-1 rounded-2xl bg-[#111d17] border border-[#1a2c24] text-[11px] sm:text-xs font-bold">
+                <button type="button" onclick="setContractMode('risefall')" id="tab-mode-risefall"
+                    class="contract-tab py-2.5 px-1 rounded-xl text-emerald-200/70 hover:text-white transition cursor-pointer truncate">
+                    Rise / Fall
+                </button>
+                <button type="button" onclick="setContractMode('evenodd')" id="tab-mode-evenodd"
+                    class="contract-tab py-2.5 px-1 rounded-xl bg-[#00ffc4]/15 border border-[#00ffc4]/50 text-[#00ffc4] transition cursor-pointer truncate">
+                    Even / Odd
+                </button>
+                <button type="button" onclick="setContractMode('overunder')" id="tab-mode-overunder"
+                    class="contract-tab py-2.5 px-1 rounded-xl text-emerald-200/70 hover:text-white transition cursor-pointer truncate">
+                    Over / Under
+                </button>
+                <button type="button" onclick="setContractMode('matchdiff')" id="tab-mode-matchdiff"
+                    class="contract-tab py-2.5 px-1 rounded-xl text-emerald-200/70 hover:text-white transition cursor-pointer truncate">
+                    Matches / Differs
+                </button>
+            </div>
+
+            <!-- Real-Time HTML5 Canvas Chart Card -->
+            <section class="bg-[#111d17] border border-[#1a2c24] rounded-3xl overflow-hidden shadow-xl">
+                <!-- Chart Top Overlay Controls -->
+                <div class="px-3.5 py-2.5 border-b border-[#1a2c24] flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                        <span class="px-2.5 py-1.5 rounded-xl bg-[#09110e] border border-[#1a2c24] font-mono font-bold text-xs text-[#00ffc4]">
+                            1T
+                        </span>
+                        <!-- Synthetic Volatility Index Dropdown -->
+                        <div class="relative">
+                            <select id="market-selector" onchange="changeMarket(this.value)"
+                                class="appearance-none bg-[#09110e] border border-[#1a2c24] hover:border-[#00ffc4]/50 rounded-xl pl-3 pr-8 py-1.5 text-xs sm:text-sm font-bold text-white focus:outline-none cursor-pointer">
+                                <option value="VOL_10_1S">Volatility 10 (1s) Index</option>
+                                <option value="VOL_25">Volatility 25 Index</option>
+                                <option value="VOL_50">Volatility 50 Index</option>
+                                <option value="VOL_75">Volatility 75 Index</option>
+                                <option value="VOL_100">Volatility 100 Index</option>
+                            </select>
+                            <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-emerald-300/70 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+                        </div>
+                    </div>
+
+                    <!-- Live Quote & Fixed 80% Profit Badge -->
+                    <div class="flex items-center gap-2.5 font-mono">
+                        <div class="text-right">
+                            <span id="chart-live-quote" class="font-extrabold text-sm text-white tabular-nums">9450.34</span>
+                            <span id="chart-live-delta" class="text-[11px] text-[#00ffc4] ml-1 tabular-nums">+0.01 (+0.01%)</span>
+                        </div>
+                        <span class="px-2.5 py-1 rounded-lg bg-[#09110e] border border-[#00ffc4]/40 text-[#00ffc4] font-bold text-xs">
+                            +80%
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Responsive HTML5 Canvas -->
+                <div id="chart-container" class="relative w-full h-[215px] sm:h-[260px] bg-[#09110e]">
+                    <canvas id="price-canvas" class="block w-full h-full"></canvas>
+                </div>
+            </section>
+
+            <!-- Interactive 0-9 Last-Digit Strip & Frequencies -->
+            <section class="bg-[#111d17] border border-[#1a2c24] rounded-2xl p-3">
+                <div id="digit-frequency-strip" class="grid grid-cols-10 gap-1 sm:gap-2">
+                    <!-- Populated dynamically with digits 0-9 + live % -->
+                </div>
+
+                <!-- Optional Digit Barrier/Target Picker Row (Shown for Over/Under & Matches/Differs) -->
+                <div id="digit-picker-row" class="hidden mt-3 pt-3 border-t border-[#1a2c24] flex items-center justify-between gap-2">
+                    <span id="digit-picker-label" class="font-mono text-[11px] font-bold text-emerald-200/75 uppercase shrink-0">
+                        DIGIT
+                    </span>
+                    <div id="digit-picker-buttons" class="grid grid-cols-10 gap-1 sm:gap-1.5 flex-1">
+                        <!-- 0-9 selectable buttons injected via JS -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- Execution & Auto-Trade Panel -->
+            <section class="bg-[#111d17] border border-[#1a2c24] rounded-3xl p-4 space-y-3.5 shadow-xl">
+                
+                <!-- AUTO / MANUAL Mode Toggle -->
+                <div class="grid grid-cols-2 p-1 rounded-2xl bg-[#09110e] border border-[#1a2c24] text-xs font-extrabold tracking-wide">
+                    <button type="button" id="exec-mode-auto" onclick="setExecutionMode('AUTO')"
+                        class="py-2.5 rounded-xl text-emerald-200/70 hover:text-white transition cursor-pointer flex items-center justify-center gap-1.5">
+                        <i data-lucide="bot" class="w-3.5 h-3.5"></i>
+                        <span>AUTO</span>
+                    </button>
+                    <button type="button" id="exec-mode-manual" onclick="setExecutionMode('MANUAL')"
+                        class="py-2.5 rounded-xl bg-[#00ffc4] text-[#09110e] mint-glow-sm transition cursor-pointer">
+                        MANUAL
+                    </button>
+                </div>
+
+                <!-- Auto-Trade Active Running Status Banner -->
+                <div id="auto-bot-banner"
+                    class="hidden p-3 rounded-2xl bg-[#00ffc4]/10 border border-[#00ffc4]/40 flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 text-xs">
+                        <span class="w-2.5 h-2.5 rounded-full bg-[#00ffc4] animate-ping"></span>
+                        <div>
+                            <div class="font-bold text-[#00ffc4]">Auto-Trade Bot Running (<span id="bot-contract-label">EVEN</span>)</div>
+                            <div class="text-[11px] font-mono text-emerald-200/80 tabular-nums">
+                                Bot Session P/L: <span id="bot-session-pnl" class="font-bold">$0.00</span> • Next Stake: <span id="bot-next-stake" class="font-bold">$5.00</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" onclick="stopAutoBot()"
+                        class="px-3 py-1.5 rounded-xl bg-rose-500 text-white font-extrabold text-xs cursor-pointer">
+                        Stop Bot
+                    </button>
+                </div>
+
+                <!-- Stake Selector ($5.00 Minimum Enforced) -->
+                <div class="bg-[#09110e] border border-[#1a2c24] rounded-2xl p-3 flex items-center justify-between">
+                    <button type="button" onclick="adjustStake(-5)"
+                        class="w-10 h-10 rounded-xl bg-[#111d17] hover:bg-[#16261e] border border-[#1a2c24] text-emerald-100 font-bold text-lg flex items-center justify-center cursor-pointer">
+                        −
+                    </button>
+                    <div class="text-center">
+                        <span class="block text-[10px] font-mono uppercase tracking-wider text-emerald-300/60">STAKE (MIN $5.00)</span>
+                        <div class="inline-flex items-center justify-center mt-0.5">
+                            <span class="font-mono font-bold text-base text-[#00ffc4] mr-1">$</span>
+                            <input type="number" id="input-stake" value="10" min="5" step="1" onchange="validateStakeInput()"
+                                class="w-24 bg-transparent text-center font-mono font-extrabold text-2xl text-white tabular-nums focus:outline-none">
+                        </div>
+                    </div>
+                    <button type="button" onclick="adjustStake(5)"
+                        class="w-10 h-10 rounded-xl bg-[#111d17] hover:bg-[#16261e] border border-[#1a2c24] text-emerald-100 font-bold text-lg flex items-center justify-center cursor-pointer">
+                        +
+                    </button>
+                </div>
+
+                <!-- Quick Stake Chips ($5, $10, $25, $50, $100) -->
+                <div class="grid grid-cols-5 gap-1.5 font-mono text-xs">
+                    <button type="button" onclick="setStake(5)" class="stake-chip py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-200/80 hover:border-[#00ffc4]/50 font-bold cursor-pointer">$5</button>
+                    <button type="button" onclick="setStake(10)" class="stake-chip py-2 rounded-xl bg-[#00ffc4]/15 border border-[#00ffc4] text-[#00ffc4] font-bold cursor-pointer">$10</button>
+                    <button type="button" onclick="setStake(25)" class="stake-chip py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-200/80 hover:border-[#00ffc4]/50 font-bold cursor-pointer">$25</button>
+                    <button type="button" onclick="setStake(50)" class="stake-chip py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-200/80 hover:border-[#00ffc4]/50 font-bold cursor-pointer">$50</button>
+                    <button type="button" onclick="setStake(100)" class="stake-chip py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-200/80 hover:border-[#00ffc4]/50 font-bold cursor-pointer">$100</button>
+                </div>
+
+                <!-- Auto-Trade Strategy Inputs (Target Profit, Stop Loss, Martingale Multiplier) -->
+                <div class="grid grid-cols-3 gap-2 font-mono">
+                    <div class="bg-[#09110e] border border-[#1a2c24] rounded-2xl p-2.5 text-center">
+                        <div class="text-[10px] text-emerald-300/60 flex items-center justify-center gap-1">
+                            <i data-lucide="target" class="w-3 h-3 text-[#00ffc4]"></i>
+                            <span>TARGET</span>
+                        </div>
+                        <div class="flex items-center justify-center mt-1">
+                            <span class="text-xs text-[#00ffc4] mr-0.5">$</span>
+                            <input type="number" id="auto-target-profit" value="200" min="5"
+                                class="w-16 bg-transparent text-center font-extrabold text-sm text-white tabular-nums focus:outline-none">
+                        </div>
+                    </div>
+
+                    <div class="bg-[#09110e] border border-[#1a2c24] rounded-2xl p-2.5 text-center">
+                        <div class="text-[10px] text-emerald-300/60 flex items-center justify-center gap-1">
+                            <i data-lucide="shield-alert" class="w-3 h-3 text-rose-400"></i>
+                            <span>STOP LOSS</span>
+                        </div>
+                        <div class="flex items-center justify-center mt-1">
+                            <span class="text-xs text-rose-400 mr-0.5">$</span>
+                            <input type="number" id="auto-stop-loss" value="999" min="5"
+                                class="w-16 bg-transparent text-center font-extrabold text-sm text-white tabular-nums focus:outline-none">
+                        </div>
+                    </div>
+
+                    <div class="bg-[#09110e] border border-[#1a2c24] rounded-2xl p-2.5 text-center">
+                        <div class="text-[10px] text-emerald-300/60 flex items-center justify-center gap-1">
+                            <i data-lucide="layers" class="w-3 h-3 text-cyan-400"></i>
+                            <span>MULT</span>
+                        </div>
+                        <div class="flex items-center justify-center mt-1">
+                            <span class="text-xs text-cyan-400 mr-0.5">x</span>
+                            <input type="number" id="auto-multiplier" value="2" min="1" max="10" step="0.1"
+                                class="w-14 bg-transparent text-center font-extrabold text-sm text-white tabular-nums focus:outline-none">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dual Execution Buttons (Fixed 80% Profit = 1.80x Return) -->
+                <div class="grid grid-cols-2 gap-3 pt-1">
+                    <button type="button" onclick="triggerTradeAction('PRIMARY')"
+                        class="p-3.5 rounded-2xl bg-[#00ffc4]/12 hover:bg-[#00ffc4]/20 border-2 border-[#00ffc4] text-left transition cursor-pointer mint-glow-sm">
+                        <div class="flex items-center justify-between">
+                            <span id="btn-primary-title" class="font-extrabold text-base sm:text-lg text-[#00ffc4]">Even</span>
+                            <span id="btn-primary-payout" class="font-mono font-extrabold text-sm sm:text-base text-white tabular-nums">$18.00</span>
+                        </div>
+                        <div class="flex items-center justify-between mt-1 text-[11px] font-mono text-emerald-200/75">
+                            <span>80.00% Profit</span>
+                            <span>Payout</span>
+                        </div>
+                    </button>
+
+                    <button type="button" onclick="triggerTradeAction('SECONDARY')"
+                        class="p-3.5 rounded-2xl bg-rose-500/12 hover:bg-rose-500/20 border-2 border-rose-500 text-left transition cursor-pointer">
+                        <div class="flex items-center justify-between">
+                            <span id="btn-secondary-title" class="font-extrabold text-base sm:text-lg text-rose-400">Odd</span>
+                            <span id="btn-secondary-payout" class="font-mono font-extrabold text-sm sm:text-base text-white tabular-nums">$18.00</span>
+                        </div>
+                        <div class="flex items-center justify-between mt-1 text-[11px] font-mono text-emerald-200/75">
+                            <span>80.00% Profit</span>
+                            <span>Payout</span>
+                        </div>
+                    </button>
+                </div>
+            </section>
+        </main>
+
+        <!-- =================================================================
+             7. "REFER & EARN" AFFILIATE DASHBOARD VIEW
+             ================================================================= -->
+        <section id="view-refer" class="hidden max-w-2xl w-full mx-auto px-4 pt-4 space-y-4">
+            <button type="button" onclick="showMainView('trading')"
+                class="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300/75 hover:text-[#00ffc4] cursor-pointer">
+                <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                <span>Back to trading</span>
+            </button>
+
+            <div>
+                <h1 class="text-2xl font-extrabold text-white">Refer &amp; Earn</h1>
+                <p class="text-xs sm:text-sm text-emerald-200/70 mt-1">
+                    Earn <span class="text-[#00ffc4] font-bold">10%</span> of your friend's first deposit and <span class="text-[#00ffc4] font-bold">4%</span> of every deposit they make after.
+                </p>
+            </div>
+
+            <!-- 3-Card Metrics Row -->
+            <div class="grid grid-cols-3 gap-2.5 font-mono">
+                <div class="bg-[#111d17] border border-[#1a2c24] rounded-2xl p-3.5">
+                    <div class="text-[11px] text-emerald-300/60 flex items-center gap-1">
+                        <i data-lucide="users" class="w-3.5 h-3.5"></i>
+                        <span>Referrals</span>
+                    </div>
+                    <div id="ref-count-val" class="text-lg font-extrabold text-white mt-1.5 tabular-nums">0</div>
+                </div>
+                <div class="bg-[#111d17] border border-[#1a2c24] rounded-2xl p-3.5">
+                    <div class="text-[11px] text-emerald-300/60 flex items-center gap-1">
+                        <i data-lucide="gift" class="w-3.5 h-3.5"></i>
+                        <span>First deposit</span>
+                    </div>
+                    <div id="ref-first-dep-val" class="text-lg font-extrabold text-white mt-1.5 tabular-nums">$0.00</div>
+                </div>
+                <div class="bg-[#111d17] border border-[#1a2c24] rounded-2xl p-3.5">
+                    <div class="text-[11px] text-emerald-300/60 flex items-center gap-1">
+                        <i data-lucide="dollar-sign" class="w-3.5 h-3.5"></i>
+                        <span>Commission</span>
+                    </div>
+                    <div id="ref-comm-val" class="text-lg font-extrabold text-white mt-1.5 tabular-nums">$0.00</div>
+                </div>
+            </div>
+
+            <!-- Highlighted TOTAL EARNED Card -->
+            <div class="bg-[#111d17] border border-[#00ffc4]/45 rounded-2xl p-4">
+                <div class="text-xs font-mono uppercase tracking-wider text-emerald-300/70">TOTAL EARNED</div>
+                <div id="ref-total-earned" class="font-mono font-extrabold text-3xl text-[#00ffc4] mt-1 tabular-nums">$0.00</div>
+            </div>
+
+            <!-- Referral Code & Link Box -->
+            <div class="bg-[#111d17] border border-[#1a2c24] rounded-2xl p-4 space-y-4">
+                <div>
+                    <div class="text-[11px] font-mono uppercase text-emerald-300/60">YOUR REFERRAL CODE</div>
+                    <div id="user-ref-code" class="font-mono font-extrabold text-xl tracking-widest text-white mt-1">GTN99XP</div>
+                </div>
+
+                <div>
+                    <div class="text-[11px] font-mono uppercase text-emerald-300/60 mb-1.5">YOUR REFERRAL LINK</div>
+                    <input type="text" id="user-ref-link" readonly value="https://gtnbinary.com/signup?ref=GTN99XP"
+                        class="w-full bg-[#09110e] border border-[#1a2c24] rounded-xl px-3.5 py-2.5 font-mono text-xs text-emerald-100 focus:outline-none">
+                </div>
+
+                <div class="grid grid-cols-2 gap-2.5">
+                    <button type="button" onclick="copyReferralLink()"
+                        class="py-2.5 rounded-xl bg-[#09110e] hover:bg-[#16261e] border border-[#1a2c24] text-white font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer">
+                        <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                        <span>Copy</span>
+                    </button>
+                    <button type="button" onclick="shareReferralLink()"
+                        class="py-2.5 rounded-xl bg-[#00ffc4]/15 hover:bg-[#00ffc4]/25 border border-[#00ffc4] text-[#00ffc4] font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer">
+                        <i data-lucide="share-2" class="w-3.5 h-3.5"></i>
+                        <span>Share</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Referrals History List -->
+            <div>
+                <h2 class="text-sm font-bold text-white mb-2">Your referrals</h2>
+                <div class="bg-[#111d17] border border-[#1a2c24] rounded-2xl p-6 text-center text-xs text-emerald-300/60">
+                    No referrals yet. Share your link to start earning.
+                </div>
+            </div>
+        </section>
+
+        <!-- =================================================================
+             8. "ACCOUNT SETTINGS" VIEW (5 Sub-Tabs + KYC)
+             ================================================================= -->
+        <section id="view-account" class="hidden max-w-2xl w-full mx-auto px-4 pt-4 space-y-4">
+            <button type="button" onclick="showMainView('trading')"
+                class="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300/75 hover:text-[#00ffc4] cursor-pointer">
+                <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                <span>Back to trading</span>
+            </button>
+
+            <h1 class="text-2xl font-extrabold text-white">Account Settings</h1>
+
+            <!-- Horizontal Scrollable Sub-Tabs -->
+            <div class="flex gap-2 overflow-x-auto no-scrollbar pb-1 border-b border-[#1a2c24] text-xs font-bold">
+                <button type="button" onclick="switchAccountSubTab('profile')" id="acct-subtab-profile"
+                    class="acct-subtab px-3.5 py-2.5 rounded-xl bg-[#111d17] border border-[#00ffc4]/50 text-[#00ffc4] flex items-center gap-1.5 shrink-0 cursor-pointer">
+                    <i data-lucide="user" class="w-3.5 h-3.5"></i>
+                    <span>Edit Profile</span>
+                </button>
+                <button type="button" onclick="switchAccountSubTab('password')" id="acct-subtab-password"
+                    class="acct-subtab px-3.5 py-2.5 rounded-xl text-emerald-200/70 hover:text-white flex items-center gap-1.5 shrink-0 cursor-pointer">
+                    <i data-lucide="lock" class="w-3.5 h-3.5"></i>
+                    <span>Change Password</span>
+                </button>
+                <button type="button" onclick="switchAccountSubTab('2fa')" id="acct-subtab-2fa"
+                    class="acct-subtab px-3.5 py-2.5 rounded-xl text-emerald-200/70 hover:text-white flex items-center gap-1.5 shrink-0 cursor-pointer">
+                    <i data-lucide="shield" class="w-3.5 h-3.5"></i>
+                    <span>Two-Factor Auth</span>
+                </button>
+                <button type="button" onclick="switchAccountSubTab('kyc')" id="acct-subtab-kyc"
+                    class="acct-subtab px-3.5 py-2.5 rounded-xl text-emerald-200/70 hover:text-white flex items-center gap-1.5 shrink-0 cursor-pointer">
+                    <i data-lucide="user-check" class="w-3.5 h-3.5"></i>
+                    <span>Verify Identity</span>
+                </button>
+                <button type="button" onclick="switchAccountSubTab('referrals')" id="acct-subtab-referrals"
+                    class="acct-subtab px-3.5 py-2.5 rounded-xl text-emerald-200/70 hover:text-white flex items-center gap-1.5 shrink-0 cursor-pointer">
+                    <i data-lucide="gift" class="w-3.5 h-3.5"></i>
+                    <span>Referrals</span>
+                </button>
+            </div>
+
+            <!-- Sub-Tab 1: Edit Profile -->
+            <div id="acct-panel-profile" class="acct-panel bg-[#111d17] border border-[#1a2c24] rounded-3xl p-5 space-y-4">
+                <div>
+                    <h2 class="text-lg font-extrabold text-white">Edit Profile</h2>
+                    <p class="text-xs text-emerald-300/65">Update your personal information.</p>
+                </div>
+
+                <div class="space-y-3">
+                    <div>
+                        <label class="block text-[11px] font-mono uppercase text-emerald-300/65 mb-1">EMAIL</label>
+                        <input type="email" id="prof-email" value="trader@gtnbinary.com"
+                            class="w-full bg-[#09110e] border border-[#1a2c24] focus:border-[#00ffc4] rounded-xl px-3.5 py-3 text-sm text-white focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-mono uppercase text-emerald-300/65 mb-1">FULL NAME</label>
+                        <input type="text" id="prof-name" value="Alex Trader"
+                            class="w-full bg-[#09110e] border border-[#1a2c24] focus:border-[#00ffc4] rounded-xl px-3.5 py-3 text-sm text-white focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-mono uppercase text-emerald-300/65 mb-1">PHONE</label>
+                        <input type="tel" id="prof-phone" value="+254712345678"
+                            class="w-full bg-[#09110e] border border-[#1a2c24] focus:border-[#00ffc4] rounded-xl px-3.5 py-3 font-mono text-sm text-white focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-mono uppercase text-emerald-300/65 mb-1">COUNTRY</label>
+                        <input type="text" id="prof-country" value="KE"
+                            class="w-full bg-[#09110e] border border-[#1a2c24] focus:border-[#00ffc4] rounded-xl px-3.5 py-3 font-mono uppercase text-sm text-white focus:outline-none">
+                    </div>
+                </div>
+
+                <button type="button" onclick="saveProfileChanges()"
+                    class="px-5 py-3 rounded-xl bg-[#00ffc4] hover:bg-[#00e6b0] text-[#09110e] font-extrabold text-xs tracking-wide mint-glow-sm transition cursor-pointer">
+                    Save changes
+                </button>
+            </div>
+
+            <!-- Sub-Tab 2: Change Password -->
+            <div id="acct-panel-password" class="hidden acct-panel bg-[#111d17] border border-[#1a2c24] rounded-3xl p-5 space-y-4">
+                <div>
+                    <h2 class="text-lg font-extrabold text-white">Change Password</h2>
+                    <p class="text-xs text-emerald-300/65">Choose a strong password with at least 8 characters.</p>
+                </div>
+
+                <div class="space-y-3">
+                    <input type="password" id="new-pass-input" placeholder="New password"
+                        class="w-full bg-[#09110e] border border-[#1a2c24] focus:border-[#00ffc4] rounded-xl px-3.5 py-3 text-sm text-white placeholder-emerald-300/35 focus:outline-none">
+                    <input type="password" id="conf-pass-input" placeholder="Confirm new password"
+                        class="w-full bg-[#09110e] border border-[#1a2c24] focus:border-[#00ffc4] rounded-xl px-3.5 py-3 text-sm text-white placeholder-emerald-300/35 focus:outline-none">
+                </div>
+
+                <button type="button" onclick="handleUpdatePassword()"
+                    class="px-5 py-3 rounded-xl bg-[#00ffc4] hover:bg-[#00e6b0] text-[#09110e] font-extrabold text-xs tracking-wide mint-glow-sm transition cursor-pointer">
+                    Update password
+                </button>
+            </div>
+
+            <!-- Sub-Tab 3: Two-Factor Auth -->
+            <div id="acct-panel-2fa" class="hidden acct-panel bg-[#111d17] border border-[#1a2c24] rounded-3xl p-5 space-y-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-lg font-extrabold text-white">Two-Factor Authentication (2FA)</h2>
+                        <p class="text-xs text-emerald-300/65 mt-0.5">Add an extra security layer to withdrawals and logins.</p>
+                    </div>
+                    <button type="button" id="btn-toggle-2fa" onclick="toggleTwoFactor()"
+                        class="px-4 py-2 rounded-xl bg-[#09110e] border border-[#00ffc4] text-[#00ffc4] font-bold text-xs cursor-pointer">
+                        Enable 2FA
+                    </button>
+                </div>
+                <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] font-mono text-xs text-emerald-200/80">
+                    Backup Recovery Key: <span class="text-[#00ffc4] font-bold">GTN2-FA99-8841-SAFE</span>
+                </div>
+            </div>
+
+            <!-- Sub-Tab 4: Verify Identity / KYC -->
+            <div id="acct-panel-kyc" class="hidden acct-panel bg-[#111d17] border border-[#1a2c24] rounded-3xl p-5 space-y-4">
+                <div>
+                    <h2 class="text-lg font-extrabold text-white">Verify Identity</h2>
+                    <p class="text-xs text-emerald-300/65 mt-0.5">Upload a government-issued ID to unlock higher deposit and withdrawal limits.</p>
+                </div>
+
+                <!-- Verification Status Box -->
+                <div class="p-4 rounded-2xl bg-[#09110e] border border-[#1a2c24] flex items-start justify-between gap-3">
+                    <div class="flex items-start gap-3">
+                        <div class="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center shrink-0">
+                            <i data-lucide="user-check" class="w-4 h-4 text-amber-400"></i>
+                        </div>
+                        <div>
+                            <div class="text-sm font-bold text-white">Verification status</div>
+                            <p id="kyc-status-desc" class="text-xs text-emerald-300/65 mt-0.5">
+                                Not verified. Upload a government-issued ID to start.
+                            </p>
+                        </div>
+                    </div>
+                    <span id="kyc-status-badge"
+                        class="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-400 font-mono font-bold text-[11px] shrink-0">
+                        unverified
+                    </span>
+                </div>
+
+                <!-- 3 File Upload Zones -->
+                <div class="space-y-2.5">
+                    <label class="flex items-center justify-between p-3.5 rounded-2xl bg-[#09110e] border border-dashed border-[#1a2c24] hover:border-[#00ffc4] cursor-pointer transition">
+                        <div class="flex items-center gap-2.5 text-xs font-semibold text-emerald-100">
+                            <i data-lucide="upload" class="w-4 h-4 text-[#00ffc4]"></i>
+                            <span id="kyc-label-front">ID front (required)</span>
+                        </div>
+                        <input type="file" accept="image/*" class="hidden" onchange="handleKycFileSelect('front', this)">
+                    </label>
+
+                    <label class="flex items-center justify-between p-3.5 rounded-2xl bg-[#09110e] border border-dashed border-[#1a2c24] hover:border-[#00ffc4] cursor-pointer transition">
+                        <div class="flex items-center gap-2.5 text-xs font-semibold text-emerald-100">
+                            <i data-lucide="upload" class="w-4 h-4 text-emerald-300/60"></i>
+                            <span id="kyc-label-back">ID back (optional)</span>
+                        </div>
+                        <input type="file" accept="image/*" class="hidden" onchange="handleKycFileSelect('back', this)">
+                    </label>
+
+                    <label class="flex items-center justify-between p-3.5 rounded-2xl bg-[#09110e] border border-dashed border-[#1a2c24] hover:border-[#00ffc4] cursor-pointer transition">
+                        <div class="flex items-center gap-2.5 text-xs font-semibold text-emerald-100">
+                            <i data-lucide="upload" class="w-4 h-4 text-emerald-300/60"></i>
+                            <span id="kyc-label-selfie">Selfie with ID (optional)</span>
+                        </div>
+                        <input type="file" accept="image/*" class="hidden" onchange="handleKycFileSelect('selfie', this)">
+                    </label>
+                </div>
+
+                <button type="button" onclick="submitKycReview()"
+                    class="px-5 py-3 rounded-xl bg-[#00ffc4] hover:bg-[#00e6b0] text-[#09110e] font-extrabold text-xs flex items-center gap-2 mint-glow-sm transition cursor-pointer">
+                    <i data-lucide="upload" class="w-4 h-4"></i>
+                    <span>Submit for review</span>
+                </button>
+            </div>
+
+            <!-- Sub-Tab 5: Referrals Summary -->
+            <div id="acct-panel-referrals" class="hidden acct-panel bg-[#111d17] border border-[#1a2c24] rounded-3xl p-5 space-y-4">
+                <div>
+                    <h2 class="text-lg font-extrabold text-white">Referrals</h2>
+                    <p class="text-xs text-emerald-300/70 mt-0.5">
+                        Earn <span class="text-[#00ffc4] font-bold">10%</span> of your friend's first deposit and <span class="text-[#00ffc4] font-bold">4%</span> of every deposit they make after.
+                    </p>
+                </div>
+                <div class="space-y-2.5 font-mono">
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] flex items-center justify-between">
+                        <span class="text-xs text-emerald-300/65">Total referrals</span>
+                        <span class="font-extrabold text-white">0</span>
+                    </div>
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] flex items-center justify-between">
+                        <span class="text-xs text-emerald-300/65">Deposit commissions</span>
+                        <span class="font-extrabold text-white">$0.00</span>
+                    </div>
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#00ffc4]/40 flex items-center justify-between">
+                        <span class="text-xs text-[#00ffc4]">TOTAL EARNED</span>
+                        <span class="font-extrabold text-lg text-[#00ffc4]">$0.00</span>
+                    </div>
+                </div>
+                <button type="button" onclick="showMainView('refer')"
+                    class="w-full py-2.5 rounded-xl bg-[#00ffc4]/15 border border-[#00ffc4] text-[#00ffc4] font-bold text-xs cursor-pointer">
+                    Open Full Refer &amp; Earn Dashboard →
+                </button>
+            </div>
+        </section>
+
+        <!-- =================================================================
+             5. FIXED BOTTOM UTILITY BAR (Live Chat | AI | Positions)
+             ================================================================= -->
+        <nav class="fixed bottom-0 left-0 right-0 z-30 bg-[#09110e]/95 backdrop-blur-md border-t border-[#1a2c24] px-4 py-2">
+            <div class="max-w-lg mx-auto flex items-center justify-around">
+                <button type="button" onclick="openModal('modal-chat')"
+                    class="flex flex-col items-center gap-1 text-emerald-200/75 hover:text-[#00ffc4] transition cursor-pointer">
+                    <i data-lucide="message-circle" class="w-5 h-5"></i>
+                    <span class="text-[11px] font-semibold">Live Chat</span>
+                </button>
+
+                <!-- Glowing Center AI Button -->
+                <button type="button" onclick="openModal('modal-ai')"
+                    class="flex flex-col items-center -mt-5 cursor-pointer group">
+                    <div class="w-12 h-12 rounded-full bg-gradient-to-br from-[#00ffc4] to-cyan-400 text-[#09110e] flex items-center justify-center mint-glow group-hover:scale-105 transition">
+                        <i data-lucide="sparkles" class="w-5 h-5"></i>
+                    </div>
+                    <span class="text-[11px] font-extrabold text-[#00ffc4] mt-1">AI</span>
+                </button>
+
+                <button type="button" onclick="openModal('modal-positions')"
+                    class="flex flex-col items-center gap-1 text-emerald-200/75 hover:text-[#00ffc4] transition cursor-pointer relative">
+                    <i data-lucide="clock" class="w-5 h-5"></i>
+                    <span class="text-[11px] font-semibold">Positions</span>
+                    <span id="bottom-open-badge"
+                        class="hidden -top-1 -right-2 absolute px-1.5 py-0.2 rounded-full bg-[#00ffc4] text-[#09110e] font-mono font-extrabold text-[9px]">
+                        0
+                    </span>
+                </button>
+            </div>
+        </nav>
+    </div>
+
+    <!-- =====================================================================
+         4. UNIFIED CASHIER MODAL (Deposit $5 Min | Withdraw $10 Min | History)
+         ===================================================================== -->
+    <div id="modal-cashier" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+        <div class="bg-[#111d17] border border-[#1a2c24] rounded-3xl w-full max-w-md max-h-[90vh] overflow-y-auto p-5 shadow-2xl space-y-4">
+            
+            <!-- Modal Top Header -->
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 id="cashier-title" class="text-xl font-extrabold text-white">Deposit Funds</h2>
+                    <p id="cashier-subtitle" class="text-xs text-emerald-300/65">Choose payment method</p>
+                </div>
+                <button type="button" onclick="closeModal('modal-cashier')"
+                    class="p-2 rounded-full bg-[#09110e] hover:bg-[#16261e] text-emerald-200/75 cursor-pointer">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+            </div>
+
+            <!-- Cashier Tabs: Deposit / Withdraw / History -->
+            <div class="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[#09110e] border border-[#1a2c24] text-xs font-bold">
+                <button type="button" onclick="switchCashierTab('deposit')" id="ctab-deposit"
+                    class="py-2 rounded-lg bg-[#00ffc4] text-[#09110e] cursor-pointer">Deposit</button>
+                <button type="button" onclick="switchCashierTab('withdraw')" id="ctab-withdraw"
+                    class="py-2 rounded-lg text-emerald-200/70 hover:text-white cursor-pointer">Withdraw</button>
+                <button type="button" onclick="switchCashierTab('history')" id="ctab-history"
+                    class="py-2 rounded-lg text-emerald-200/70 hover:text-white cursor-pointer">History</button>
+            </div>
+
+            <!-- TAB A: DEPOSIT FUNDS ($5.00 MINIMUM) -->
+            <div id="cpanel-deposit" class="space-y-3.5">
+                <!-- Method Selector Cards (Step 1) -->
+                <div id="deposit-method-list" class="space-y-2.5">
+                    <button type="button" onclick="selectDepositGateway('MPESA')"
+                        class="w-full p-4 rounded-2xl bg-[#09110e] hover:bg-[#16261e] border border-[#1a2c24] hover:border-[#00ffc4]/50 flex items-center justify-between transition cursor-pointer">
+                        <div class="flex items-center gap-3.5">
+                            <div class="w-11 h-11 rounded-2xl bg-[#00ffc4]/20 border border-[#00ffc4]/40 flex items-center justify-center">
+                                <i data-lucide="smartphone" class="w-5 h-5 text-[#00ffc4]"></i>
+                            </div>
+                            <div class="text-left">
+                                <div class="font-extrabold text-sm text-white">MPESA</div>
+                                <div class="text-xs text-emerald-300/60">Instant mobile money</div>
+                            </div>
+                        </div>
+                        <i data-lucide="chevron-right" class="w-4 h-4 text-emerald-300/60"></i>
+                    </button>
+
+                    <button type="button" onclick="selectDepositGateway('CARD')"
+                        class="w-full p-4 rounded-2xl bg-[#09110e] hover:bg-[#16261e] border border-[#1a2c24] hover:border-[#00ffc4]/50 flex items-center justify-between transition cursor-pointer">
+                        <div class="flex items-center gap-3.5">
+                            <div class="w-11 h-11 rounded-2xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center">
+                                <i data-lucide="credit-card" class="w-5 h-5 text-sky-300"></i>
+                            </div>
+                            <div class="text-left">
+                                <div class="font-extrabold text-sm text-white">Credit or Debit Card</div>
+                                <div class="text-xs text-emerald-300/60">Secure Flutterwave checkout</div>
+                            </div>
+                        </div>
+                        <i data-lucide="chevron-right" class="w-4 h-4 text-emerald-300/60"></i>
+                    </button>
+                </div>
+
+                <!-- Deposit Amount Form (Step 2) -->
+                <div id="deposit-amount-step" class="hidden space-y-3.5">
+                    <div class="flex items-center justify-between">
+                        <button type="button" onclick="backToDepositMethods()"
+                            class="text-xs font-semibold text-[#00ffc4] flex items-center gap-1 cursor-pointer">
+                            <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
+                            <span id="selected-gateway-label">MPESA</span>
+                        </button>
+                        <span class="text-[11px] font-mono text-emerald-300/65">Target: <strong id="deposit-target-acct" class="text-white">LIVE ACCOUNT</strong></span>
+                    </div>
+
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24]">
+                        <label class="block text-[10px] font-mono uppercase text-emerald-300/60">AMOUNT (USD)</label>
+                        <div class="flex items-center mt-1">
+                            <span class="font-mono font-bold text-lg text-[#00ffc4] mr-2">$</span>
+                            <input type="number" id="deposit-usd-input" value="10" min="5" step="1" oninput="updateDepositConversion()"
+                                class="w-full bg-transparent font-mono font-extrabold text-2xl text-white tabular-nums focus:outline-none">
+                        </div>
+                    </div>
+
+                    <!-- Quick Deposit Presets ($5 Min enforced) -->
+                    <div class="grid grid-cols-5 gap-1.5 font-mono text-xs">
+                        <button type="button" onclick="setDepositAmount(5)" class="py-2 rounded-xl bg-[#09110e] border border-[#00ffc4]/40 text-[#00ffc4] font-bold cursor-pointer">$5</button>
+                        <button type="button" onclick="setDepositAmount(10)" class="py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-100 font-bold cursor-pointer">$10</button>
+                        <button type="button" onclick="setDepositAmount(25)" class="py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-100 font-bold cursor-pointer">$25</button>
+                        <button type="button" onclick="setDepositAmount(50)" class="py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-100 font-bold cursor-pointer">$50</button>
+                        <button type="button" onclick="setDepositAmount(100)" class="py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-100 font-bold cursor-pointer">$100</button>
+                    </div>
+
+                    <!-- KES Conversion Rate Line -->
+                    <div id="mpesa-kes-line" class="text-xs font-mono text-emerald-200/80">
+                        ≈ <strong id="deposit-kes-amount" class="text-white">KES 1,300.00</strong> <span class="text-emerald-300/50">@ 1 USD = 130.00 KES</span>
+                    </div>
+
+                    <!-- Strict $5.00 Min Deposit Notice -->
+                    <div class="px-3.5 py-2.5 rounded-xl bg-[#09110e] border border-[#1a2c24] text-xs font-mono text-emerald-200/80">
+                        Min deposit: <strong class="text-[#00ffc4]">$5.00</strong>
+                    </div>
+
+                    <!-- Registered Phone / Wallet Display -->
+                    <div id="mpesa-phone-card" class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] space-y-1.5">
+                        <div class="text-[10px] font-mono uppercase text-emerald-300/60">M-PESA PHONE NUMBER</div>
+                        <div class="flex items-center gap-2 font-mono font-bold text-sm text-white">
+                            <i data-lucide="smartphone" class="w-4 h-4 text-[#00ffc4]"></i>
+                            <span id="deposit-masked-phone">+254712****78</span>
+                        </div>
+                        <p class="text-[11px] text-emerald-300/55">A secure payment prompt will be sent to this number. Enter your M-Pesa PIN only on your phone, never on this website.</p>
+                    </div>
+
+                    <div id="card-secure-note" class="hidden p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] space-y-1.5">
+                        <div class="font-bold text-sm text-white">Secure card payment</div>
+                        <p class="text-[11px] text-emerald-300/65">You’ll continue to Flutterwave’s hosted checkout. Card details are not entered or stored on this website.</p>
+                    </div>
+
+                    <button type="button" onclick="executeDeposit()" id="btn-confirm-deposit"
+                        class="w-full py-3.5 rounded-2xl bg-[#00ffc4] hover:bg-[#00e6b0] text-[#09110e] font-extrabold text-sm mint-glow transition cursor-pointer">
+                        Deposit $10.00
+                    </button>
+                </div>
+            </div>
+
+            <!-- TAB B: WITHDRAW FUNDS ($10.00 MINIMUM) -->
+            <div id="cpanel-withdraw" class="hidden space-y-3.5">
+                <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] flex items-center justify-between font-mono">
+                    <span class="text-xs text-emerald-300/65">Withdrawable Live Balance</span>
+                    <span id="withdraw-avail-bal" class="font-extrabold text-base text-[#00ffc4] tabular-nums">$0.00</span>
+                </div>
+
+                <div>
+                    <label class="block text-[11px] font-mono uppercase text-emerald-300/65 mb-1">WITHDRAWAL CHANNEL</label>
+                    <div class="w-full bg-[#09110e] border border-[#1a2c24] rounded-xl px-3.5 py-3 text-sm font-bold text-white">M-Pesa Mobile Money</div>
+                </div>
+
+                <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24]">
+                    <div class="flex items-center justify-between text-[10px] font-mono text-emerald-300/60">
+                        <span>WITHDRAWAL AMOUNT (USD)</span>
+                        <button type="button" onclick="setMaxWithdraw()" class="text-[#00ffc4] font-bold cursor-pointer">MAX</button>
+                    </div>
+                    <div class="flex items-center mt-1">
+                        <span class="font-mono font-bold text-lg text-[#00ffc4] mr-2">$</span>
+                        <input type="number" id="withdraw-usd-input" value="10" min="10" step="1"
+                            class="w-full bg-transparent font-mono font-extrabold text-2xl text-white tabular-nums focus:outline-none">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-[11px] font-mono uppercase text-emerald-300/65 mb-1">REGISTERED M-PESA NUMBER</label>
+                    <input type="text" id="withdraw-dest-input" value="+254712345678" readonly
+                        class="w-full bg-[#09110e] border border-[#1a2c24] rounded-xl px-3.5 py-3 font-mono text-sm text-white focus:outline-none">
+                </div>
+
+                <div class="px-3.5 py-2.5 rounded-xl bg-[#09110e] border border-[#1a2c24] text-xs font-mono text-amber-300">
+                    Min withdrawal: <strong>$10.00</strong> • Sent to your registered M-Pesa number.
+                </div>
+
+                <button type="button" onclick="executeWithdraw()"
+                    class="w-full py-3.5 rounded-2xl bg-[#00ffc4] hover:bg-[#00e6b0] text-[#09110e] font-extrabold text-sm mint-glow transition cursor-pointer">
+                    Request Withdrawal
+                </button>
+            </div>
+
+            <!-- TAB C: CASHIER HISTORY -->
+            <div id="cpanel-history" class="hidden space-y-2.5">
+                <div id="cashier-history-list" class="space-y-2 max-h-72 overflow-y-auto">
+                    <div class="py-8 text-center text-xs text-emerald-300/55">No deposits or withdrawals yet.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         5A. "AI ENTRY SCANNER" MODAL
+         ===================================================================== -->
+    <div id="modal-ai" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+        <div class="bg-[#111d17] border border-[#1a2c24] rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-9 h-9 rounded-full bg-[#00ffc4] text-[#09110e] flex items-center justify-center mint-glow-sm">
+                        <i data-lucide="sparkles" class="w-4 h-4"></i>
+                    </div>
+                    <h2 class="text-lg font-extrabold text-white">Entry Scanner</h2>
+                </div>
+                <button type="button" onclick="closeModal('modal-ai')" class="p-1.5 text-emerald-200/70 hover:text-white cursor-pointer">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] text-xs text-emerald-200/80 leading-relaxed">
+                Pick the market category you want to scan. The deep scanner walks every <strong class="text-white">volatility / synthetic</strong> index and surfaces the best entry point for that category based on historical tick patterns.
+            </div>
+
+            <div>
+                <label class="block text-xs font-bold text-white mb-1.5">Market</label>
+                <select id="ai-category-select"
+                    class="w-full bg-[#09110e] border border-[#1a2c24] rounded-xl px-3.5 py-3 text-sm font-semibold text-white focus:outline-none">
+                    <option value="evenodd">Even / Odd</option>
+                    <option value="risefall">Rise / Fall</option>
+                    <option value="overunder">Over / Under</option>
+                    <option value="matchdiff">Matches / Differs</option>
+                </select>
+            </div>
+
+            <!-- Scan Progress Bar -->
+            <div class="space-y-1.5 font-mono text-xs">
+                <div class="flex items-center justify-between text-emerald-300/70">
+                    <span id="ai-scan-status">Ready to scan</span>
+                    <span id="ai-scan-counter">0/12</span>
+                </div>
+                <div class="w-full h-2 rounded-full bg-[#09110e] overflow-hidden">
+                    <div id="ai-scan-bar" class="h-full bg-[#00ffc4] w-0 transition-all duration-150"></div>
+                </div>
+            </div>
+
+            <!-- Scan Result Card -->
+            <div id="ai-result-card" class="hidden p-3.5 rounded-2xl bg-[#00ffc4]/10 border border-[#00ffc4]/45 space-y-1">
+                <div class="flex items-center justify-between font-mono text-xs">
+                    <span class="text-[#00ffc4] font-bold">OPTIMAL SIGNAL FOUND</span>
+                    <span id="ai-result-conf" class="px-2 py-0.5 rounded bg-[#00ffc4] text-[#09110e] font-extrabold">91.4% CONF</span>
+                </div>
+                <div id="ai-result-title" class="text-sm font-extrabold text-white">Volatility 10 (1s) Index → EVEN</div>
+                <p id="ai-result-desc" class="text-[11px] text-emerald-200/75">Digit skew detected over last 60 ticks. 80% fixed profit payout active.</p>
+            </div>
+
+            <button type="button" onclick="runAiDeepScan()"
+                class="w-full py-3.5 rounded-2xl bg-[#00ffc4] hover:bg-[#00e6b0] text-[#09110e] font-extrabold text-sm flex items-center justify-center gap-2 mint-glow transition cursor-pointer">
+                <i data-lucide="search" class="w-4 h-4"></i>
+                <span>Deep Scan for Best Market</span>
+            </button>
+
+            <button type="button" id="btn-load-scanner-bot" onclick="loadDeepScannerBot()"
+                class="w-full py-3 rounded-2xl bg-[#09110e] hover:bg-[#16261e] border border-[#1a2c24] text-[#00ffc4] font-bold text-xs transition cursor-pointer">
+                Load Deep Scanner Bot
+            </button>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         5B. "POSITIONS" DRAWER (Open | Closed | History + Session P/L)
+         ===================================================================== -->
+    <div id="modal-positions" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex justify-end">
+        <div class="bg-[#0b1511] border-l border-[#1a2c24] w-full max-w-md h-full flex flex-col justify-between">
+            
+            <div>
+                <!-- Header Tabs -->
+                <div class="px-4 py-3 border-b border-[#1a2c24] flex items-center justify-between">
+                    <div class="flex items-center gap-4 text-xs font-bold">
+                        <button type="button" onclick="switchPosTab('open')" id="postab-open"
+                            class="pb-2 border-b-2 border-[#00ffc4] text-white cursor-pointer">
+                            Open (<span id="pos-open-count">0</span>)
+                        </button>
+                        <button type="button" onclick="switchPosTab('closed')" id="postab-closed"
+                            class="pb-2 border-b-2 border-transparent text-emerald-300/60 hover:text-white cursor-pointer">
+                            Closed (<span id="pos-closed-count">0</span>)
+                        </button>
+                        <button type="button" onclick="switchPosTab('history')" id="postab-history"
+                            class="pb-2 border-b-2 border-transparent text-emerald-300/60 hover:text-white cursor-pointer">
+                            History
+                        </button>
+                    </div>
+                    <button type="button" onclick="closeModal('modal-positions')" class="p-1.5 text-emerald-300/70 hover:text-white cursor-pointer">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+
+                <!-- Positions List Container -->
+                <div id="positions-list-body" class="p-4 space-y-2.5 overflow-y-auto max-h-[calc(100vh-145px)]">
+                    <!-- Populated via JS -->
+                </div>
+            </div>
+
+            <!-- Live Session P/L Footer -->
+            <div class="p-4 border-t border-[#1a2c24] bg-[#09110e] font-mono text-xs space-y-1.5">
+                <div class="flex items-center justify-between text-emerald-300/70">
+                    <span>Session</span>
+                    <span id="session-wl-summary" class="text-white font-bold">0 trades (0W / 0L)</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-emerald-300/70">Session P/L:</span>
+                    <span id="session-pnl-summary" class="font-extrabold text-sm text-[#00ffc4] tabular-nums">+0.00 USD</span>
+                </div>
+                <div id="session-open-footer" class="text-[11px] text-emerald-300/50">0 open positions</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         5C. "LIVE CHAT" CUSTOMER CARE DRAWER
+         ===================================================================== -->
+    <div id="modal-chat" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex justify-end">
+        <div class="bg-[#0b1511] border-l border-[#1a2c24] w-full max-w-md h-full flex flex-col justify-between">
+            
+            <!-- Agent Header -->
+            <div class="px-4 py-3.5 bg-[#111d17] border-b border-[#1a2c24] flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-[#00ffc4] to-cyan-400 text-[#09110e] flex items-center justify-center">
+                        <i data-lucide="headphones" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <div class="font-extrabold text-sm text-white">Customer Care</div>
+                        <div class="flex items-center gap-1.5 text-[11px] text-emerald-200/75">
+                            <span class="w-2 h-2 rounded-full bg-[#00ffc4]"></span>
+                            <span>A live agent is here to help</span>
+                        </div>
+                    </div>
+                </div>
+                <button type="button" onclick="closeModal('modal-chat')" class="p-1.5 text-emerald-300/70 hover:text-white cursor-pointer">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- Chat Messages Feed -->
+            <div id="chat-messages-feed" class="flex-1 p-4 overflow-y-auto space-y-3">
+                <div class="max-w-[82%] bg-[#111d17] border border-[#1a2c24] rounded-2xl rounded-tl-sm p-3 text-xs text-emerald-100">
+                    <div>Welcome to <strong>GTN Binary Options</strong> support! How can we assist you with deposits ($5 min), withdrawals ($10 min), or trading?</div>
+                    <div class="text-[10px] font-mono text-emerald-300/50 mt-1">Support Desk • Online</div>
+                </div>
+            </div>
+
+            <!-- Chat Composer -->
+            <form onsubmit="sendChatMessage(event)" class="p-3 bg-[#111d17] border-t border-[#1a2c24]">
+                <div class="flex items-center gap-2 bg-[#09110e] border border-[#1a2c24] rounded-2xl px-3 py-2">
+                    <button type="button" onclick="showToast('File attachment ready', 'info')" class="text-emerald-300/60 hover:text-[#00ffc4] cursor-pointer">
+                        <i data-lucide="paperclip" class="w-4 h-4"></i>
+                    </button>
+                    <button type="button" onclick="showToast('Voice note ready', 'info')" class="text-emerald-300/60 hover:text-[#00ffc4] cursor-pointer">
+                        <i data-lucide="mic" class="w-4 h-4"></i>
+                    </button>
+                    <input type="text" id="chat-input" placeholder="Type your message..."
+                        class="flex-1 bg-transparent text-xs text-white placeholder-emerald-300/40 focus:outline-none">
+                    <button type="submit"
+                        class="w-8 h-8 rounded-xl bg-[#00ffc4]/20 hover:bg-[#00ffc4] text-[#00ffc4] hover:text-[#09110e] flex items-center justify-center transition cursor-pointer">
+                        <i data-lucide="send" class="w-3.5 h-3.5"></i>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         6. "HOW TO TRADE" 8-SECTION INTERACTIVE GUIDE MODAL
+         ===================================================================== -->
+    <div id="modal-guide" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+        <div class="bg-[#111d17] border border-[#1a2c24] rounded-3xl w-full max-w-lg max-h-[88vh] flex flex-col overflow-hidden shadow-2xl">
+            
+            <!-- Guide Header -->
+            <div class="px-5 py-4 border-b border-[#1a2c24] flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#00ffc4] to-cyan-400 text-[#09110e] flex items-center justify-center">
+                        <i data-lucide="book-open" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <h2 class="font-extrabold text-base text-white">How to Trade</h2>
+                        <p class="text-xs text-emerald-300/65">Your complete GTN Binary Options guide</p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeModal('modal-guide')" class="p-1.5 text-emerald-300/70 hover:text-white cursor-pointer">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- Scrollable 8-Section Content -->
+            <div class="p-5 overflow-y-auto space-y-6 text-xs text-emerald-100/85 leading-relaxed">
+                
+                <!-- 1. The Basics -->
+                <div class="space-y-1.5">
+                    <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                        <i data-lucide="target" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>1. The Basics</span>
+                    </h3>
+                    <p>GTN Binary Options is a fast-execution prediction platform. You place a stake (minimum <strong class="text-white">$5.00</strong>) on a short price or digit outcome (1–5 seconds). If your prediction is right, you receive your stake back plus a fixed <strong class="text-[#00ffc4]">80% profit payout</strong>. If wrong, you lose only the stake — never more.</p>
+                </div>
+
+                <!-- 2. Demo vs Real -->
+                <div class="space-y-1.5">
+                    <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                        <i data-lucide="wallet" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>2. Demo vs Real</span>
+                    </h3>
+                    <p>Switch any time using the account pill at the top:</p>
+                    <ul class="list-disc pl-5 space-y-1">
+                        <li><strong class="text-white">Demo</strong> — practice with $1,000.00 virtual funds. No real money at risk.</li>
+                        <li><strong class="text-white">Real</strong> — uses your deposited balance ($5.00 min deposit). Wins/losses are real.</li>
+                    </ul>
+                </div>
+
+                <!-- 3. Markets — Volatility Indices -->
+                <div class="space-y-1.5">
+                    <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                        <i data-lucide="zap" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>3. Markets — Volatility Indices</span>
+                    </h3>
+                    <p>We offer synthetic <strong class="text-white">Volatility Indices</strong> (Vol 10 (1s), Vol 25, Vol 50, Vol 75, Vol 100). They run 24/7 and aren't affected by news or market hours — pure price action.</p>
+                </div>
+
+                <!-- 4. Contract Types — Deep Dive -->
+                <div class="space-y-3">
+                    <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                        <i data-lucide="hash" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>4. Contract Types — Deep Dive</span>
+                    </h3>
+
+                    <!-- Rise / Fall Card -->
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="font-extrabold text-white">Rise / Fall</span>
+                            <span class="px-2 py-0.5 rounded-full bg-[#00ffc4]/15 border border-[#00ffc4]/40 text-[#00ffc4] font-mono text-[10px] font-bold">80% Profit</span>
+                        </div>
+                        <p>Predict whether the next tick price finishes higher (RISE) or lower (FALL) than your entry price.</p>
+                        <div class="p-2.5 rounded-xl bg-[#111d17] font-mono text-[11px]">
+                            <span class="text-[#00ffc4] font-bold">Example:</span> Entry 9450.34. Stake $10 on RISE. Next tick 9450.61 → higher → you win <strong class="text-white">$8.00 profit ($18.00 returned)</strong>.
+                        </div>
+                        <div class="text-[11px] italic text-emerald-300/75">💡 Best on calmer indices (Vol 10, Vol 25) where directional drifts are steady.</div>
+                    </div>
+
+                    <!-- Even / Odd Card -->
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="font-extrabold text-white">Even / Odd</span>
+                            <span class="px-2 py-0.5 rounded-full bg-[#00ffc4]/15 border border-[#00ffc4]/40 text-[#00ffc4] font-mono text-[10px] font-bold">80% Profit</span>
+                        </div>
+                        <p>Predict whether the LAST decimal digit (0–9) of the next tick will be even (0,2,4,6,8) or odd (1,3,5,7,9).</p>
+                        <div class="p-2.5 rounded-xl bg-[#111d17] font-mono text-[11px]">
+                            <span class="text-[#00ffc4] font-bold">Example:</span> Current tick 9450.32 (digit 2 → even). Stake $5 on ODD. Next tick 9450.47 → digit 7 → odd → you win <strong class="text-white">$4.00 profit ($9.00 returned)</strong>.
+                        </div>
+                        <div class="text-[11px] italic text-emerald-300/75">💡 Use the 0–9 frequency strip to spot short-term digit imbalances.</div>
+                    </div>
+
+                    <!-- Over / Under Card -->
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="font-extrabold text-white">Over / Under</span>
+                            <span class="px-2 py-0.5 rounded-full bg-[#00ffc4]/15 border border-[#00ffc4]/40 text-[#00ffc4] font-mono text-[10px] font-bold">80% Profit</span>
+                        </div>
+                        <p>Pick a barrier digit 0–9, then predict whether the last digit of the next tick will be OVER (greater than) or UNDER (less than) the barrier.</p>
+                        <div class="p-2.5 rounded-xl bg-[#111d17] font-mono text-[11px]">
+                            <span class="text-[#00ffc4] font-bold">Example:</span> Set barrier = 4, choose OVER. You win if the next digit is 5, 6, 7, 8, or 9.
+                        </div>
+                        <div class="text-[11px] italic text-emerald-300/75">💡 Barrier 4 for Over and Barrier 5 for Under offer balanced 5-digit coverage.</div>
+                    </div>
+
+                    <!-- Matches / Differs Card -->
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="font-extrabold text-white">Matches / Differs</span>
+                            <span class="px-2 py-0.5 rounded-full bg-[#00ffc4]/15 border border-[#00ffc4]/40 text-[#00ffc4] font-mono text-[10px] font-bold">80% Profit</span>
+                        </div>
+                        <p>Pick one digit 0–9. MATCHES wins if the next tick's last digit equals your pick; DIFFERS wins if it is any of the other 9 digits.</p>
+                        <div class="p-2.5 rounded-xl bg-[#111d17] font-mono text-[11px]">
+                            <span class="text-[#00ffc4] font-bold">Example:</span> Pick digit 7, tap DIFFERS with $10. Next tick ends in 3 → win <strong class="text-white">$8.00 profit ($18.00 returned)</strong>.
+                        </div>
+                        <div class="text-[11px] italic text-emerald-300/75">💡 Combine with the AI Entry Scanner to target cold digits.</div>
+                    </div>
+                </div>
+
+                <!-- 5. Placing a Trade -->
+                <div class="space-y-1.5">
+                    <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                        <i data-lucide="clock" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>5. Placing a Trade</span>
+                    </h3>
+                    <ol class="list-decimal pl-5 space-y-1">
+                        <li>Choose a synthetic market (e.g., Volatility 10 (1s)).</li>
+                        <li>Pick a contract type (Rise/Fall, Even/Odd, Over/Under, Matches/Differs).</li>
+                        <li>Enter your stake ($5.00 minimum).</li>
+                        <li>Tap the green or red button for your prediction.</li>
+                        <li>Result settles on the next ticks — your wallet updates automatically.</li>
+                    </ol>
+                </div>
+
+                <!-- 6. Auto-Trade -->
+                <div class="space-y-1.5">
+                    <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                        <i data-lucide="bot" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>6. Auto-Trade</span>
+                    </h3>
+                    <p>Switch to <strong class="text-white">AUTO</strong> to run a strategy hands-free:</p>
+                    <ul class="list-disc pl-5 space-y-1">
+                        <li><strong class="text-white">Target Profit:</strong> $200 default — bot stops automatically when reached.</li>
+                        <li><strong class="text-white">Stop Loss:</strong> $999 default — maximum loss safety stop.</li>
+                        <li><strong class="text-white">Multiplier:</strong> 2x default — stake multiplies after a loss (Martingale recovery).</li>
+                    </ul>
+                </div>
+
+                <!-- 7. Deposits & Withdrawals -->
+                <div class="space-y-1.5">
+                    <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                        <i data-lucide="landmark" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>7. Deposits &amp; Withdrawals</span>
+                    </h3>
+                    <p>• <strong class="text-white">MPESA / Crypto Deposits:</strong> Minimum <strong class="text-[#00ffc4]">$5.00</strong> instant funding.<br>
+                       • <strong class="text-white">Withdrawals:</strong> Minimum <strong class="text-[#00ffc4]">$10.00</strong> profit payout processed to your registered channel.</p>
+                </div>
+
+                <!-- 8. Risk Management -->
+                <div class="space-y-2">
+                    <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                        <i data-lucide="trending-down" class="w-4 h-4 text-[#00ffc4]"></i>
+                        <span>8. Risk Management</span>
+                    </h3>
+                    <ul class="list-disc pl-5 space-y-1">
+                        <li>Never stake more than you can afford to lose.</li>
+                        <li>Start small on Real — use Demo ($1,000) to test strategies first.</li>
+                        <li>Set tight Auto-Trade Stop Loss limits to protect your capital.</li>
+                    </ul>
+
+                    <div class="p-3.5 rounded-2xl bg-[#09110e] border border-[#1a2c24] text-emerald-200/80">
+                        Need help? Tap <button type="button" onclick="closeModal('modal-guide'); openModal('modal-chat')" class="text-[#00ffc4] font-bold underline cursor-pointer">Live Chat</button> any time — our support team is online.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         JAVASCRIPT ENGINE (Auth, Canvas, Digit Stream, Auto-Bot, Cashier)
+         ===================================================================== -->
+    <script>
+        const STORAGE_KEY = 'gtn_binary_options_state_v1';
+        const API_BASE = '';
+        let authToken = localStorage.getItem('gtn_auth_token') || '';
+        let backendSocket = null;
+        const PAYOUT_PROFIT_RATE = 0.80; // Fixed 80% profit (1.80x return)
+        const MIN_DEPOSIT = 5.00;
+        const MIN_WITHDRAWAL = 10.00;
+        const MIN_STAKE = 5.00;
+        const KES_PER_USD = 129.98;
+
+        // Synthetic Volatility Indices
+        const MARKETS = {
+            'VOL_10_1S': { name: 'Volatility 10 (1s) Index', price: 9450.34, openPrice: 9450.33, vol: 0.38 },
+            'VOL_25':    { name: 'Volatility 25 Index',      price: 4120.80, openPrice: 4120.50, vol: 0.72 },
+            'VOL_50':    { name: 'Volatility 50 Index',      price: 6890.15, openPrice: 6889.90, vol: 1.15 },
+            'VOL_75':    { name: 'Volatility 75 Index',      price: 12450.90, openPrice: 12450.00, vol: 1.95 },
+            'VOL_100':   { name: 'Volatility 100 Index',     price: 3210.45, openPrice: 3210.10, vol: 2.60 }
+        };
+
+        // Main App State
+        let state = {
+            isAuthenticated: false,
+            authMode: 'register', // 'register' | 'login'
+            user: {
+                fullName: 'Alex Trader',
+                email: 'trader@gtnbinary.com',
+                country: 'KE',
+                dialCode: '+254',
+                phone: '712345678',
+                referralCode: 'GTN99XP',
+                kycStatus: 'unverified',
+                twoFactor: false
+            },
+            accountType: 'DEMO', // 'DEMO' | 'LIVE'
+            demoBalance: 1000.00,
+            liveBalance: 0.00,
+            soundEnabled: true,
+
+            // Trading Terminal State
+            activeMarket: 'VOL_10_1S',
+            contractMode: 'evenodd', // 'risefall' | 'evenodd' | 'overunder' | 'matchdiff'
+            selectedDigit: 5,
+            execMode: 'MANUAL', // 'MANUAL' | 'AUTO'
+            stake: 10,
+
+            // Auto-Trade Bot State
+            botRunning: false,
+            botSide: null, // 'PRIMARY' | 'SECONDARY'
+            botCurrentStake: 10,
+            botSessionPnL: 0,
+
+            // History & Positions
+            positions: [],
+            transactions: [],
+            sessionWins: 0,
+            sessionLosses: 0,
+            sessionPnL: 0,
+
+            // Live Chart Ticks & Digit Counts
+            ticks: [],
+            digitCounts: [12, 9, 11, 12, 10, 8, 9, 8, 10, 11],
+            lastEntryLine: null,
+            selectedGateway: 'MPESA',
+            activePosTab: 'open'
+        };
+
+        let audioCtx = null;
+        let marketInterval = null;
+        let paymentPollTimer = null;
+
+        async function apiRequest(path, options = {}) {
+            const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+            if (authToken) headers.Authorization = `Bearer ${authToken}`;
+            const response = await fetch(API_BASE + path, { ...options, headers });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+            return data;
+        }
+
+        function mapBackendTrade(trade) {
+            return {
+                id: trade.id,
+                market: trade.marketName,
+                symbol: trade.symbol,
+                accountType: trade.accountType,
+                mode: trade.contractType === 'RISE' || trade.contractType === 'FALL' ? 'risefall'
+                    : trade.contractType === 'EVEN' || trade.contractType === 'ODD' ? 'evenodd'
+                    : trade.contractType === 'OVER' || trade.contractType === 'UNDER' ? 'overunder'
+                    : 'matchdiff',
+                side: 'PRIMARY',
+                label: trade.contractType,
+                digitTarget: trade.barrier,
+                stake: trade.stake,
+                entryPrice: trade.entryPrice,
+                exitPrice: trade.exitPrice,
+                exitDigit: trade.exitDigit,
+                status: trade.status,
+                pnl: trade.profit,
+                ticksRemaining: trade.status === 'OPEN' ? 2 : 0,
+                timestamp: new Date(trade.createdAt).toLocaleTimeString()
+            };
+        }
+
+        async function syncBackendState() {
+            if (!authToken) return;
+            try {
+                const data = await apiRequest('/api/state');
+                state.user = {
+                    ...state.user,
+                    fullName: data.user.fullName,
+                    email: data.user.email,
+                    country: data.user.country,
+                    phone: data.user.phone || state.user.phone,
+                    referralCode: data.user.referralCode,
+                    kycStatus: data.user.kycStatus,
+                    twoFactor: data.user.twoFactorEnabled
+                };
+                state.demoBalance = data.user.demoBalance;
+                state.liveBalance = data.user.liveBalance;
+                state.positions = data.trades.map(mapBackendTrade);
+                state.transactions = data.transactions.map(tx => ({
+                    id: tx.id,
+                    type: tx.type,
+                    method: tx.method,
+                    accountType: tx.accountType,
+                    amount: tx.amount,
+                    status: tx.status,
+                    destination: tx.destination,
+                    time: new Date(tx.timestamp).toLocaleString()
+                }));
+                updateBalanceUI();
+                renderPositionsDrawer();
+                renderCashierHistory();
+                syncUserProfileUI();
+                saveState();
+            } catch (error) {
+                // Keep the in-browser state available if the API is temporarily unreachable.
+            }
+        }
+
+        function connectBackendSocket() {
+            if (!authToken || backendSocket) return;
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            backendSocket = new WebSocket(`${protocol}//${location.host}`);
+            backendSocket.onmessage = event => {
+                const message = JSON.parse(event.data);
+                if (message.type !== 'TICK') return;
+                const point = message.data[state.activeMarket];
+                if (!point) return;
+                const m = MARKETS[state.activeMarket];
+                m.price = point.price;
+                state.ticks.push({ time: new Date(point.time), price: point.price, digit: point.lastDigit });
+                if (state.ticks.length > 75) state.ticks.shift();
+                state.digitCounts[point.lastDigit] = (state.digitCounts[point.lastDigit] || 0) + 1;
+                renderDigitStrip(point.lastDigit);
+                if (!document.getElementById('view-trading').classList.contains('hidden')) drawPriceCanvas();
+            };
+            backendSocket.onclose = () => { backendSocket = null; };
+        }
+
+        function getRegisteredPhone() {
+            const phone = String(state.user.phone || '');
+            return phone.startsWith('+') ? phone : `${state.user.dialCode || '+254'}${phone}`;
+        }
+
+        /**
+         * Web Audio API Synthesized Chimes (No external sound URLs)
+         */
+        function playTone(type) {
+            if (!state.soundEnabled) return;
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                const now = audioCtx.currentTime;
+                if (type === 'win') {
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(523.25, now);
+                    osc.frequency.setValueAtTime(659.25, now + 0.09);
+                    osc.frequency.setValueAtTime(783.99, now + 0.18);
+                    gain.gain.setValueAtTime(0.12, now);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+                    osc.start(now);
+                    osc.stop(now + 0.35);
+                } else if (type === 'loss') {
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(220, now);
+                    osc.frequency.linearRampToValueAtTime(140, now + 0.25);
+                    gain.gain.setValueAtTime(0.08, now);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+                    osc.start(now);
+                    osc.stop(now + 0.28);
+                } else {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(880, now);
+                    gain.gain.setValueAtTime(0.04, now);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+                    osc.start(now);
+                    osc.stop(now + 0.06);
+                }
+            } catch (e) { /* Ignore audio block before gesture */ }
+        }
+
+        function toggleAudio() {
+            state.soundEnabled = !state.soundEnabled;
+            const icon = document.getElementById('icon-sound');
+            icon.setAttribute('data-lucide', state.soundEnabled ? 'volume-2' : 'volume-x');
+            lucide.createIcons();
+            showToast(state.soundEnabled ? 'Sound effects enabled' : 'Sound effects muted', 'info');
+        }
+
+        /**
+         * Custom Non-Blocking Toast Banner
+         */
+        function showToast(message, variant = 'success') {
+            const container = document.getElementById('toast-container');
+            const el = document.createElement('div');
+            const colors = {
+                success: 'bg-[#111d17] border-[#00ffc4] text-white',
+                error:   'bg-[#111d17] border-rose-500 text-rose-200',
+                info:    'bg-[#111d17] border-cyan-400 text-cyan-100'
+            };
+            el.className = `pointer-events-auto px-4 py-3 rounded-2xl border shadow-2xl text-xs font-semibold flex items-center gap-2.5 transition-all duration-200 ${colors[variant] || colors.success}`;
+            el.innerHTML = `<span class="w-2 h-2 rounded-full ${variant === 'error' ? 'bg-rose-500' : 'bg-[#00ffc4]'} shrink-0"></span><span>${message}</span>`;
+            container.appendChild(el);
+            setTimeout(() => {
+                el.style.opacity = '0';
+                setTimeout(() => el.remove(), 220);
+            }, 3200);
+        }
+
+        /**
+         * Persistence Helpers
+         */
+        function saveState() {
+            try {
+                const toSave = {
+                    isAuthenticated: state.isAuthenticated,
+                    user: state.user,
+                    accountType: state.accountType,
+                    demoBalance: state.demoBalance,
+                    liveBalance: state.liveBalance,
+                    positions: state.positions.slice(0, 60),
+                    transactions: state.transactions.slice(0, 40),
+                    sessionWins: state.sessionWins,
+                    sessionLosses: state.sessionLosses,
+                    sessionPnL: state.sessionPnL
+                };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+            } catch (e) { /* Ignore storage quota errors */ }
+        }
+
+        function loadState() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return;
+                const parsed = JSON.parse(raw);
+                Object.assign(state, parsed);
+            } catch (e) { /* Ignore corrupt storage */ }
+        }
+
+        /**
+         * 1. AUTHENTICATION FLOW ("Create account" + "Log In" + "Demo Guest")
+         */
+        function switchAuthMode(mode) {
+            state.authMode = mode;
+            const isReg = mode === 'register';
+
+            document.getElementById('auth-tab-register').className = isReg
+                ? 'py-2.5 rounded-lg bg-[#00ffc4] text-[#09110e] transition cursor-pointer'
+                : 'py-2.5 rounded-lg text-emerald-200/70 hover:text-white transition cursor-pointer';
+            document.getElementById('auth-tab-login').className = !isReg
+                ? 'py-2.5 rounded-lg bg-[#00ffc4] text-[#09110e] transition cursor-pointer'
+                : 'py-2.5 rounded-lg text-emerald-200/70 hover:text-white transition cursor-pointer';
+
+            document.getElementById('auth-heading').textContent = isReg ? 'Create account' : 'Welcome back';
+            document.getElementById('auth-subheading').textContent = isReg
+                ? 'Fill in your details to get started on GTN Binary Options'
+                : 'Log in to access your GTN Demo & Live trading accounts';
+            document.getElementById('auth-submit-btn').textContent = isReg ? 'Create Account' : 'Log In to Terminal';
+
+            ['field-fullname', 'field-country', 'field-phone', 'field-confirm-password', 'field-referral'].forEach(id => {
+                document.getElementById(id).classList.toggle('hidden', !isReg);
+            });
+        }
+
+        function updateCountryDialCode() {
+            const sel = document.getElementById('reg-country');
+            const opt = sel.options[sel.selectedIndex];
+            const dial = opt.getAttribute('data-dial') || '+254';
+            document.getElementById('reg-dial-badge').textContent = dial;
+        }
+
+        function togglePasswordVisibility(inputId, iconId) {
+            const inp = document.getElementById(inputId);
+            const ico = document.getElementById(iconId);
+            const show = inp.type === 'password';
+            inp.type = show ? 'text' : 'password';
+            ico.setAttribute('data-lucide', show ? 'eye-off' : 'eye');
+            lucide.createIcons();
+        }
+
+        async function handleAuthSubmit(e) {
+            e.preventDefault();
+            const email = document.getElementById('reg-email').value.trim();
+            const pass = document.getElementById('reg-password').value;
+
+            if (pass.length < 6) {
+                showToast('Password must be at least 6 characters.', 'error');
+                return;
+            }
+
+            if (state.authMode === 'register') {
+                const name = document.getElementById('reg-name').value.trim() || 'GTN Trader';
+                const confPass = document.getElementById('reg-confirm-password').value;
+                if (pass !== confPass) {
+                    showToast('Passwords do not match.', 'error');
+                    return;
+                }
+                const countrySel = document.getElementById('reg-country');
+                const country = countrySel.value;
+                const dialCode = countrySel.options[countrySel.selectedIndex].getAttribute('data-dial') || '+254';
+                const phone = document.getElementById('reg-phone').value.trim() || '712345678';
+                let phoneDigits = phone.replace(/\D/g, '');
+                if (country === 'KE' && phoneDigits.startsWith('0')) phoneDigits = phoneDigits.slice(1);
+                const dialDigits = dialCode.replace(/\D/g, '');
+                const registeredPhone = phoneDigits.startsWith(dialDigits) ? `+${phoneDigits}` : `${dialCode}${phoneDigits}`;
+                try {
+                    const data = await apiRequest('/api/auth/register', {
+                        method: 'POST',
+                        body: JSON.stringify({ fullName: name, email, country, phone: registeredPhone, password: pass })
+                    });
+                    authToken = data.token;
+                    localStorage.setItem('gtn_auth_token', authToken);
+                    state.user = { ...state.user, fullName: data.user.fullName, email: data.user.email, country: data.user.country, dialCode, phone, referralCode: data.user.referralCode, kycStatus: data.user.kycStatus, twoFactor: false };
+                    state.demoBalance = data.user.demoBalance;
+                    state.liveBalance = data.user.liveBalance;
+                    showToast(`Account created for ${name}! $1,000 Demo credited.`, 'success');
+                } catch (error) {
+                    showToast(error.message, 'error');
+                    return;
+                }
+            } else {
+                try {
+                    const data = await apiRequest('/api/auth/login', {
+                        method: 'POST',
+                        body: JSON.stringify({ email, password: pass })
+                    });
+                    authToken = data.token;
+                    localStorage.setItem('gtn_auth_token', authToken);
+                    state.user = { ...state.user, fullName: data.user.fullName, email: data.user.email, country: data.user.country, referralCode: data.user.referralCode, kycStatus: data.user.kycStatus };
+                    state.demoBalance = data.user.demoBalance;
+                    state.liveBalance = data.user.liveBalance;
+                    showToast('Logged in to GTN Binary Options.', 'success');
+                } catch (error) {
+                    showToast(error.message, 'error');
+                    return;
+                }
+            }
+
+            state.isAuthenticated = true;
+            saveState();
+            enterAppShell();
+            connectBackendSocket();
+            syncBackendState();
+        }
+
+        function continueAsDemoGuest() {
+            state.isAuthenticated = true;
+            state.accountType = 'DEMO';
+            if (state.demoBalance <= 0) state.demoBalance = 1000.00;
+            saveState();
+            enterAppShell();
+            showToast('Entered Demo Guest Mode ($1,000.00 virtual balance).', 'info');
+        }
+
+        function handleLogout() {
+            stopAutoBot();
+            toggleSideMenu(false);
+            state.isAuthenticated = false;
+            authToken = '';
+            localStorage.removeItem('gtn_auth_token');
+            if (backendSocket) {
+                backendSocket.close();
+                backendSocket = null;
+            }
+            saveState();
+            document.getElementById('app-shell').classList.add('hidden');
+            document.getElementById('view-auth').classList.remove('hidden');
+            showToast('Logged out safely.', 'info');
+        }
+
+        function enterAppShell() {
+            document.getElementById('view-auth').classList.add('hidden');
+            document.getElementById('app-shell').classList.remove('hidden');
+            syncUserProfileUI();
+            updateBalanceUI();
+            updatePayoutButtons();
+            renderPositionsDrawer();
+            renderCashierHistory();
+            drawPriceCanvas();
+            lucide.createIcons();
+        }
+
+        /**
+         * 2. HEADER, ACCOUNT SWITCHER & SLIDE-OUT DRAWER
+         */
+        function toggleSideMenu(open) {
+            const drawer = document.getElementById('side-drawer');
+            const overlay = document.getElementById('side-drawer-overlay');
+            if (open) {
+                overlay.classList.remove('hidden');
+                drawer.classList.remove('-translate-x-full');
+            } else {
+                overlay.classList.add('hidden');
+                drawer.classList.add('-translate-x-full');
+            }
+        }
+
+        function drawerAction(target) {
+            toggleSideMenu(false);
+            if (target === 'deposit') openCashierModal('deposit');
+            else if (target === 'withdraw') openCashierModal('withdraw');
+            else if (target === 'history') openCashierModal('history');
+            else if (target === 'guide') openModal('modal-guide');
+            else if (target === 'refer') showMainView('refer');
+            else if (target === 'account') showMainView('account');
+            else if (target === 'chat') openModal('modal-chat');
+        }
+
+        function showMainView(viewName) {
+            ['view-trading', 'view-refer', 'view-account'].forEach(id => {
+                document.getElementById(id).classList.add('hidden');
+            });
+            document.getElementById(`view-${viewName}`).classList.remove('hidden');
+            if (viewName === 'trading') {
+                setTimeout(drawPriceCanvas, 30);
+            }
+            lucide.createIcons();
+        }
+
+        function toggleAccountDropdown() {
+            document.getElementById('account-dropdown').classList.toggle('hidden');
+            document.getElementById('notif-dropdown').classList.add('hidden');
+        }
+
+        function toggleNotifDropdown() {
+            document.getElementById('notif-dropdown').classList.toggle('hidden');
+            document.getElementById('account-dropdown').classList.add('hidden');
+            document.getElementById('notif-dot').classList.add('hidden');
+        }
+
+        function switchAccountType(type) {
+            stopAutoBot();
+            state.accountType = type;
+            document.getElementById('account-dropdown').classList.add('hidden');
+            updateBalanceUI();
+            saveState();
+            showToast(`Switched to ${type === 'LIVE' ? 'LIVE REAL ACCOUNT' : 'DEMO ACCOUNT ($1,000 Virtual)'}`, 'info');
+        }
+
+        function resetDemoBalance() {
+            state.demoBalance = 1000.00;
+            updateBalanceUI();
+            saveState();
+            document.getElementById('account-dropdown').classList.add('hidden');
+            showToast('Demo balance reset to $1,000.00', 'success');
+        }
+
+        function getActiveBalance() {
+            return state.accountType === 'LIVE' ? state.liveBalance : state.demoBalance;
+        }
+
+        function setActiveBalance(val) {
+            const clean = Math.max(0, Number(val.toFixed(2)));
+            if (state.accountType === 'LIVE') state.liveBalance = clean;
+            else state.demoBalance = clean;
+        }
+
+        function updateBalanceUI() {
+            const isLive = state.accountType === 'LIVE';
+            const activeBal = getActiveBalance();
+
+            const badge = document.getElementById('header-acct-badge');
+            badge.textContent = isLive ? 'R' : 'D';
+            badge.className = isLive
+                ? 'w-6 h-6 rounded-full bg-rose-500 text-white font-mono font-extrabold text-xs flex items-center justify-center'
+                : 'w-6 h-6 rounded-full bg-amber-500 text-[#09110e] font-mono font-extrabold text-xs flex items-center justify-center';
+
+            document.getElementById('header-balance-display').textContent = `$${activeBal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            document.getElementById('dropdown-demo-bal').textContent = `$${state.demoBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            document.getElementById('dropdown-live-bal').textContent = `$${state.liveBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            document.getElementById('withdraw-avail-bal').textContent = `$${state.liveBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        /**
+         * 3. MULTI-MODE TRADING TERMINAL & SYNTHETIC VOLATILITY ENGINE
+         */
+        function seedInitialTicks() {
+            const m = MARKETS[state.activeMarket];
+            state.ticks = [];
+            let p = m.price;
+            for (let i = 0; i < 65; i++) {
+                p = Math.max(10, p + (Math.random() - 0.5) * m.vol);
+                const digit = Number(p.toFixed(2).slice(-1));
+                state.ticks.push({
+                    time: new Date(Date.now() - (65 - i) * 1000),
+                    price: Number(p.toFixed(2)),
+                    digit
+                });
+            }
+            m.price = state.ticks[state.ticks.length - 1].price;
+        }
+
+        function startMarketStream() {
+            if (marketInterval) clearInterval(marketInterval);
+            marketInterval = setInterval(() => {
+                const m = MARKETS[state.activeMarket];
+                const shock = (Math.random() - 0.5) * m.vol * 1.35;
+                const nextPrice = Number(Math.max(10, m.price + shock).toFixed(2));
+                const digit = Number(nextPrice.toFixed(2).slice(-1));
+
+                m.price = nextPrice;
+                state.ticks.push({ time: new Date(), price: nextPrice, digit });
+                if (state.ticks.length > 75) state.ticks.shift();
+
+                // Update digit frequency counters
+                state.digitCounts[digit] = (state.digitCounts[digit] || 0) + 1;
+
+                // Update Quote Header
+                const diff = nextPrice - m.openPrice;
+                const pct = (diff / m.openPrice) * 100;
+                const quoteEl = document.getElementById('chart-live-quote');
+                const deltaEl = document.getElementById('chart-live-delta');
+                if (quoteEl && deltaEl) {
+                    quoteEl.textContent = nextPrice.toFixed(2);
+                    deltaEl.textContent = `${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+                    deltaEl.className = `text-[11px] ml-1 tabular-nums ${diff >= 0 ? 'text-[#00ffc4]' : 'text-rose-400'}`;
+                }
+
+                renderDigitStrip(digit);
+                settleOpenPositions(nextPrice, digit);
+
+                // If Auto-Trade Bot is running, execute next step on tick
+                if (state.botRunning) {
+                    stepAutoTradeBot();
+                }
+
+                if (!document.getElementById('view-trading').classList.contains('hidden')) {
+                    drawPriceCanvas();
+                }
+            }, 1000);
+        }
+
+        function changeMarket(sym) {
+            state.activeMarket = sym;
+            state.lastEntryLine = null;
+            seedInitialTicks();
+            drawPriceCanvas();
+            showToast(`Switched index to ${MARKETS[sym].name}`, 'info');
+        }
+
+        function initDigitPickerButtons() {
+            const container = document.getElementById('digit-picker-buttons');
+            container.innerHTML = '';
+            for (let d = 0; d <= 9; d++) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.id = `pick-digit-${d}`;
+                btn.textContent = d;
+                btn.onclick = () => selectTargetDigit(d);
+                btn.className = d === state.selectedDigit
+                    ? 'h-8 rounded-full border-2 border-[#00ffc4] bg-[#00ffc4]/15 text-white font-mono font-extrabold text-xs cursor-pointer'
+                    : 'h-8 rounded-full border border-[#1a2c24] bg-[#09110e] text-emerald-200/70 hover:text-white font-mono font-bold text-xs cursor-pointer';
+                container.appendChild(btn);
+            }
+        }
+
+        function selectTargetDigit(d) {
+            state.selectedDigit = d;
+            for (let i = 0; i <= 9; i++) {
+                const el = document.getElementById(`pick-digit-${i}`);
+                if (!el) continue;
+                el.className = i === d
+                    ? 'h-8 rounded-full border-2 border-[#00ffc4] bg-[#00ffc4]/15 text-white font-mono font-extrabold text-xs cursor-pointer'
+                    : 'h-8 rounded-full border border-[#1a2c24] bg-[#09110e] text-emerald-200/70 hover:text-white font-mono font-bold text-xs cursor-pointer';
+            }
+            updatePayoutButtons();
+        }
+
+        function renderDigitStrip(activeDigit) {
+            const container = document.getElementById('digit-frequency-strip');
+            if (!container) return;
+
+            const total = state.digitCounts.reduce((a, b) => a + b, 0) || 1;
+            const pcts = state.digitCounts.map(c => (c / total) * 100);
+            const maxPct = Math.max(...pcts);
+            const minPct = Math.min(...pcts);
+
+            container.innerHTML = pcts.map((pct, d) => {
+                const isActive = d === activeDigit;
+                const isHighest = pct === maxPct;
+                const isLowest = pct === minPct;
+
+                const ringClass = isActive
+                    ? 'bg-white text-[#09110e] border-2 border-[#00ffc4] scale-105 shadow-lg'
+                    : isHighest
+                        ? 'bg-[#09110e] text-[#00ffc4] border-2 border-[#00ffc4]'
+                        : isLowest
+                            ? 'bg-[#09110e] text-rose-400 border-2 border-rose-500'
+                            : 'bg-[#09110e] text-white border border-[#1a2c24]';
+
+                const pctColor = isHighest ? 'text-[#00ffc4]' : isLowest ? 'text-rose-400' : 'text-emerald-200/60';
+
+                return `
+                    <div class="flex flex-col items-center">
+                        <div class="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center font-mono font-extrabold text-xs transition-all ${ringClass}">
+                            ${d}
+                        </div>
+                        <span class="font-mono text-[9px] sm:text-[10px] font-bold mt-1 tabular-nums ${pctColor}">
+                            ${pct.toFixed(1)}%
+                        </span>
+                        <span class="h-1.5 text-[8px] text-amber-400 leading-none">${isActive ? '▼' : ''}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function setContractMode(mode) {
+            stopAutoBot();
+            state.contractMode = mode;
+
+            ['risefall', 'evenodd', 'overunder', 'matchdiff'].forEach(m => {
+                const tab = document.getElementById(`tab-mode-${m}`);
+                tab.className = m === mode
+                    ? 'contract-tab py-2.5 px-1 rounded-xl bg-[#00ffc4]/15 border border-[#00ffc4]/50 text-[#00ffc4] transition cursor-pointer truncate'
+                    : 'contract-tab py-2.5 px-1 rounded-xl text-emerald-200/70 hover:text-white transition cursor-pointer truncate';
+            });
+
+            const pickerRow = document.getElementById('digit-picker-row');
+            const pickerLabel = document.getElementById('digit-picker-label');
+            if (mode === 'overunder' || mode === 'matchdiff') {
+                pickerRow.classList.remove('hidden');
+                pickerLabel.textContent = mode === 'overunder' ? 'BARRIER' : 'DIGIT';
+            } else {
+                pickerRow.classList.add('hidden');
+            }
+
+            updatePayoutButtons();
+        }
+
+        function setExecutionMode(mode) {
+            state.execMode = mode;
+            const autoBtn = document.getElementById('exec-mode-auto');
+            const manBtn = document.getElementById('exec-mode-manual');
+
+            if (mode === 'AUTO') {
+                autoBtn.className = 'py-2.5 rounded-xl bg-[#00ffc4] text-[#09110e] mint-glow-sm transition cursor-pointer flex items-center justify-center gap-1.5';
+                manBtn.className = 'py-2.5 rounded-xl text-emerald-200/70 hover:text-white transition cursor-pointer';
+                showToast('AUTO Mode armed: Tap either contract button to start bot.', 'info');
+            } else {
+                stopAutoBot();
+                manBtn.className = 'py-2.5 rounded-xl bg-[#00ffc4] text-[#09110e] mint-glow-sm transition cursor-pointer';
+                autoBtn.className = 'py-2.5 rounded-xl text-emerald-200/70 hover:text-white transition cursor-pointer flex items-center justify-center gap-1.5';
+            }
+        }
+
+        function adjustStake(delta) {
+            const inp = document.getElementById('input-stake');
+            const next = Math.max(MIN_STAKE, (parseFloat(inp.value) || MIN_STAKE) + delta);
+            setStake(next);
+        }
+
+        function validateStakeInput() {
+            const inp = document.getElementById('input-stake');
+            let val = parseFloat(inp.value);
+            if (isNaN(val) || val < MIN_STAKE) {
+                val = MIN_STAKE;
+                showToast('Minimum trade stake on GTN Binary Options is $5.00', 'error');
+            }
+            setStake(val);
+        }
+
+        function setStake(val) {
+            state.stake = Math.max(MIN_STAKE, Number(val));
+            document.getElementById('input-stake').value = state.stake;
+
+            document.querySelectorAll('.stake-chip').forEach(btn => {
+                const chipVal = parseFloat(btn.textContent.replace('$', ''));
+                btn.className = chipVal === state.stake
+                    ? 'stake-chip py-2 rounded-xl bg-[#00ffc4]/15 border border-[#00ffc4] text-[#00ffc4] font-bold cursor-pointer'
+                    : 'stake-chip py-2 rounded-xl bg-[#09110e] border border-[#1a2c24] text-emerald-200/80 hover:border-[#00ffc4]/50 font-bold cursor-pointer';
+            });
+
+            updatePayoutButtons();
+        }
+
+        function updatePayoutButtons() {
+            const totalReturn = (state.stake * (1 + PAYOUT_PROFIT_RATE)).toFixed(2);
+            const pTitle = document.getElementById('btn-primary-title');
+            const sTitle = document.getElementById('btn-secondary-title');
+
+            if (state.contractMode === 'risefall') {
+                pTitle.textContent = 'Rise ▲';
+                sTitle.textContent = 'Fall ▼';
+            } else if (state.contractMode === 'evenodd') {
+                pTitle.textContent = 'Even';
+                sTitle.textContent = 'Odd';
+            } else if (state.contractMode === 'overunder') {
+                pTitle.textContent = `Over ${state.selectedDigit}`;
+                sTitle.textContent = `Under ${state.selectedDigit}`;
+            } else {
+                pTitle.textContent = `Match ${state.selectedDigit}`;
+                sTitle.textContent = `Differ ${state.selectedDigit}`;
+            }
+
+            document.getElementById('btn-primary-payout').textContent = `$${totalReturn}`;
+            document.getElementById('btn-secondary-payout').textContent = `$${totalReturn}`;
+        }
+
+        function getContractLabel(side) {
+            if (state.contractMode === 'risefall') return side === 'PRIMARY' ? 'RISE' : 'FALL';
+            if (state.contractMode === 'evenodd') return side === 'PRIMARY' ? 'EVEN' : 'ODD';
+            if (state.contractMode === 'overunder') return side === 'PRIMARY' ? `OVER ${state.selectedDigit}` : `UNDER ${state.selectedDigit}`;
+            return side === 'PRIMARY' ? `MATCH ${state.selectedDigit}` : `DIFFER ${state.selectedDigit}`;
+        }
+
+        function triggerTradeAction(side) {
+            if (state.execMode === 'AUTO') {
+                startAutoBot(side);
+                return;
+            }
+            placeSingleContract(side, state.stake);
+        }
+
+        function placeSingleContract(side, customStake) {
+            const stakeAmt = Math.max(MIN_STAKE, Number(customStake));
+            const avail = getActiveBalance();
+
+            if (avail < stakeAmt) {
+                if (state.accountType === 'LIVE') {
+                    showToast('Insufficient Live balance. Deposit at least $5.00 to trade Live.', 'error');
+                    openCashierModal('deposit');
+                } else {
+                    showToast('Insufficient Demo balance. Reset Demo funds in the account menu.', 'error');
+                }
+                stopAutoBot();
+                return false;
+            }
+
+            setActiveBalance(avail - stakeAmt);
+            updateBalanceUI();
+            playTone('click');
+
+            const m = MARKETS[state.activeMarket];
+            state.lastEntryLine = m.price;
+
+            const pos = {
+                id: 'GTN-' + Math.random().toString(36).substring(2, 7).toUpperCase(),
+                market: m.name,
+                symbol: state.activeMarket,
+                accountType: state.accountType,
+                mode: state.contractMode,
+                side,
+                label: getContractLabel(side),
+                digitTarget: state.selectedDigit,
+                stake: stakeAmt,
+                entryPrice: m.price,
+                exitPrice: null,
+                exitDigit: null,
+                status: 'OPEN',
+                pnl: 0,
+                ticksRemaining: 2,
+                timestamp: new Date().toLocaleTimeString()
+            };
+
+            state.positions.unshift(pos);
+            renderPositionsDrawer();
+            saveState();
+
+            if (authToken) {
+                const contractType = getContractLabel(side).split(' ')[0];
+                apiRequest('/api/trades/place', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        symbol: state.activeMarket,
+                        accountType: state.accountType,
+                        contractType,
+                        stake: stakeAmt,
+                        durationSec: 2,
+                        barrier: state.selectedDigit
+                    })
+                }).then(syncBackendState).catch(error => showToast(error.message, 'error'));
+            }
+
+            if (!state.botRunning) {
+                showToast(`Opened ${pos.label} ($${stakeAmt.toFixed(2)}) on ${m.name}`, 'info');
+            }
+            return true;
+        }
+
+        function settleOpenPositions(currentPrice, currentDigit) {
+            let anySettled = false;
+
+            state.positions.forEach(pos => {
+                if (pos.status !== 'OPEN') return;
+                pos.ticksRemaining -= 1;
+                if (pos.ticksRemaining > 0) return;
+
+                let won = false;
+                if (pos.mode === 'risefall') {
+                    won = pos.side === 'PRIMARY' ? currentPrice > pos.entryPrice : currentPrice < pos.entryPrice;
+                } else if (pos.mode === 'evenodd') {
+                    const isEven = currentDigit % 2 === 0;
+                    won = pos.side === 'PRIMARY' ? isEven : !isEven;
+                } else if (pos.mode === 'overunder') {
+                    won = pos.side === 'PRIMARY' ? currentDigit > pos.digitTarget : currentDigit < pos.digitTarget;
+                } else {
+                    won = pos.side === 'PRIMARY' ? currentDigit === pos.digitTarget : currentDigit !== pos.digitTarget;
+                }
+
+                pos.exitPrice = currentPrice;
+                pos.exitDigit = currentDigit;
+                pos.status = won ? 'WON' : 'LOST';
+                pos.pnl = won ? Number((pos.stake * PAYOUT_PROFIT_RATE).toFixed(2)) : -pos.stake;
+
+                if (won) {
+                    const payoutReturn = pos.stake + pos.pnl;
+                    if (pos.accountType === 'LIVE') state.liveBalance = Number((state.liveBalance + payoutReturn).toFixed(2));
+                    else state.demoBalance = Number((state.demoBalance + payoutReturn).toFixed(2));
+                    state.sessionWins += 1;
+                    playTone('win');
+                } else {
+                    state.sessionLosses += 1;
+                    playTone('loss');
+                }
+
+                state.sessionPnL = Number((state.sessionPnL + pos.pnl).toFixed(2));
+
+                // Update Auto-Bot Martingale & Target/Stop Checks
+                if (state.botRunning) {
+                    state.botSessionPnL = Number((state.botSessionPnL + pos.pnl).toFixed(2));
+                    const mult = parseFloat(document.getElementById('auto-multiplier').value) || 2;
+                    state.botCurrentStake = won ? state.stake : Number((state.botCurrentStake * mult).toFixed(2));
+                    updateBotBannerUI();
+                }
+
+                if (!state.botRunning) {
+                    showToast(
+                        won ? `WON ${pos.label}: +$${pos.pnl.toFixed(2)} (80% Profit)` : `LOST ${pos.label}: -$${pos.stake.toFixed(2)}`,
+                        won ? 'success' : 'error'
+                    );
+                }
+                anySettled = true;
+            });
+
+            if (anySettled) {
+                updateBalanceUI();
+                renderPositionsDrawer();
+                saveState();
+            }
+        }
+
+        /**
+         * Auto-Trade Bot Controller
+         */
+        function startAutoBot(side) {
+            state.botRunning = true;
+            state.botSide = side;
+            state.botCurrentStake = state.stake;
+            state.botSessionPnL = 0;
+
+            document.getElementById('bot-contract-label').textContent = getContractLabel(side);
+            document.getElementById('auto-bot-banner').classList.remove('hidden');
+            updateBotBannerUI();
+            showToast(`Auto-Trade Bot started on ${getContractLabel(side)}`, 'success');
+        }
+
+        function stopAutoBot() {
+            if (!state.botRunning) return;
+            state.botRunning = false;
+            document.getElementById('auto-bot-banner').classList.add('hidden');
+        }
+
+        function updateBotBannerUI() {
+            const pnlEl = document.getElementById('bot-session-pnl');
+            pnlEl.textContent = `${state.botSessionPnL >= 0 ? '+' : '-'}$${Math.abs(state.botSessionPnL).toFixed(2)}`;
+            pnlEl.className = `font-bold ${state.botSessionPnL >= 0 ? 'text-[#00ffc4]' : 'text-rose-400'}`;
+            document.getElementById('bot-next-stake').textContent = `$${state.botCurrentStake.toFixed(2)}`;
+        }
+
+        function stepAutoTradeBot() {
+            const targetProfit = parseFloat(document.getElementById('auto-target-profit').value) || 200;
+            const stopLoss = parseFloat(document.getElementById('auto-stop-loss').value) || 999;
+
+            if (state.botSessionPnL >= targetProfit) {
+                stopAutoBot();
+                showToast(`Auto-Bot Target Profit ($${targetProfit}) reached!`, 'success');
+                return;
+            }
+            if (state.botSessionPnL <= -stopLoss) {
+                stopAutoBot();
+                showToast(`Auto-Bot Stop Loss ($${stopLoss}) triggered.`, 'error');
+                return;
+            }
+
+            // Only open a new contract if none is currently awaiting settlement
+            const hasOpen = state.positions.some(p => p.status === 'OPEN');
+            if (!hasOpen) {
+                placeSingleContract(state.botSide, state.botCurrentStake);
+            }
+        }
+
+        /**
+         * Real-Time HTML5 Canvas Price Chart
+         */
+        function drawPriceCanvas() {
+            const container = document.getElementById('chart-container');
+            const canvas = document.getElementById('price-canvas');
+            if (!container || !canvas) return;
+
+            const dpr = window.devicePixelRatio || 1;
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (w === 0 || h === 0) return;
+
+            canvas.width = w * dpr;
+            canvas.height = h * dpr;
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+            ctx.fillStyle = '#09110e';
+            ctx.fillRect(0, 0, w, h);
+
+            if (state.ticks.length < 2) return;
+
+            const padL = 14, padR = 76, padT = 18, padB = 26;
+            const plotW = w - padL - padR;
+            const plotH = h - padT - padB;
+
+            let minP = Infinity, maxP = -Infinity;
+            state.ticks.forEach(t => {
+                if (t.price < minP) minP = t.price;
+                if (t.price > maxP) maxP = t.price;
+            });
+            const spread = Math.max(maxP - minP, 0.4);
+            minP -= spread * 0.2;
+            maxP += spread * 0.2;
+
+            const toX = idx => padL + (idx / (state.ticks.length - 1)) * plotW;
+            const toY = p => padT + plotH - ((p - minP) / (maxP - minP)) * plotH;
+
+            // Subtle Grid + Right Y-Axis Price Labels
+            ctx.font = '10px "JetBrains Mono", monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+
+            for (let i = 0; i <= 3; i++) {
+                const y = padT + (plotH / 3) * i;
+                const priceVal = maxP - ((maxP - minP) / 3) * i;
+
+                ctx.strokeStyle = 'rgba(26, 44, 36, 0.55)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(padL, y);
+                ctx.lineTo(w - padR, y);
+                ctx.stroke();
+
+                ctx.fillStyle = 'rgba(167, 243, 208, 0.45)';
+                ctx.fillText(priceVal.toFixed(2), w - padR + 8, y);
+            }
+
+            // Bottom X-Axis Timestamps
+            ctx.textAlign = 'center';
+            const step = Math.floor(state.ticks.length / 4);
+            for (let i = 0; i < state.ticks.length; i += Math.max(1, step)) {
+                const x = toX(i);
+                const timeStr = state.ticks[i].time.toTimeString().slice(0, 8);
+                ctx.fillStyle = 'rgba(167, 243, 208, 0.4)';
+                ctx.fillText(timeStr, x, h - 10);
+            }
+
+            // Horizontal Dashed Baseline / Entry Reference
+            const refPrice = state.lastEntryLine || state.ticks[0].price;
+            const refY = Math.min(padT + plotH, Math.max(padT, toY(refPrice)));
+            ctx.save();
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(padL, refY);
+            ctx.lineTo(w - padR, refY);
+            ctx.stroke();
+            ctx.restore();
+
+            ctx.beginPath();
+            ctx.arc(padL, refY, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+
+            // Mint-Emerald Area Fill
+            const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+            grad.addColorStop(0, 'rgba(0, 255, 196, 0.18)');
+            grad.addColorStop(1, 'rgba(9, 17, 14, 0.0)');
+
+            ctx.beginPath();
+            state.ticks.forEach((t, i) => {
+                const x = toX(i);
+                const y = toY(t.price);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.lineTo(toX(state.ticks.length - 1), padT + plotH);
+            ctx.lineTo(toX(0), padT + plotH);
+            ctx.closePath();
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // Crisp White Price Curve
+            ctx.beginPath();
+            state.ticks.forEach((t, i) => {
+                const x = toX(i);
+                const y = toY(t.price);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Current Live Price Glowing Badge on Y-Axis
+            const latest = state.ticks[state.ticks.length - 1];
+            const lastY = toY(latest.price);
+
+            ctx.fillStyle = '#09110e';
+            ctx.strokeStyle = '#00ffc4';
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.roundRect(w - padR + 4, lastY - 11, padR - 8, 22, 6);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 10px "JetBrains Mono", monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(latest.price.toFixed(2), w - padR + 9, lastY);
+        }
+
+        /**
+         * 4. UNIFIED CASHIER (Deposit $5 Min | Withdraw $10 Min | History)
+         */
+        function openCashierModal(tab = 'deposit') {
+            openModal('modal-cashier');
+            switchCashierTab(tab);
+        }
+
+        function switchCashierTab(tab) {
+            ['deposit', 'withdraw', 'history'].forEach(t => {
+                document.getElementById(`ctab-${t}`).className = t === tab
+                    ? 'py-2 rounded-lg bg-[#00ffc4] text-[#09110e] cursor-pointer'
+                    : 'py-2 rounded-lg text-emerald-200/70 hover:text-white cursor-pointer';
+                document.getElementById(`cpanel-${t}`).classList.toggle('hidden', t !== tab);
+            });
+
+            if (tab === 'deposit') {
+                document.getElementById('cashier-title').textContent = 'Deposit Funds';
+                document.getElementById('cashier-subtitle').textContent = 'Choose payment method ($5.00 minimum)';
+                backToDepositMethods();
+            } else if (tab === 'withdraw') {
+                document.getElementById('cashier-title').textContent = 'Withdraw Profits';
+                document.getElementById('cashier-subtitle').textContent = 'Minimum withdrawal: $10.00 Live balance';
+                updateBalanceUI();
+            } else {
+                document.getElementById('cashier-title').textContent = 'Cashier History';
+                document.getElementById('cashier-subtitle').textContent = 'Deposits & withdrawals ledger';
+                renderCashierHistory();
+            }
+        }
+
+        function selectDepositGateway(gateway) {
+            state.selectedGateway = gateway;
+            document.getElementById('deposit-method-list').classList.add('hidden');
+            document.getElementById('deposit-amount-step').classList.remove('hidden');
+            document.getElementById('selected-gateway-label').textContent = gateway;
+            document.getElementById('deposit-target-acct').textContent = `${state.accountType} ACCOUNT`;
+
+            const isMpesa = gateway === 'MPESA';
+            const isCard = gateway === 'CARD';
+            document.getElementById('mpesa-kes-line').classList.toggle('hidden', !isMpesa);
+            document.getElementById('mpesa-phone-card').classList.toggle('hidden', !isMpesa);
+            document.getElementById('card-secure-note').classList.toggle('hidden', !isCard);
+            document.getElementById('btn-confirm-deposit').textContent = isCard ? 'Continue to Secure Card Checkout' : `Send M-Pesa Prompt`;
+
+            const fullPhone = getRegisteredPhone();
+            const masked = fullPhone.length > 7
+                ? fullPhone.slice(0, 6) + '****' + fullPhone.slice(-2)
+                : fullPhone;
+            document.getElementById('deposit-masked-phone').textContent = masked;
+
+            updateDepositConversion();
+        }
+
+        function backToDepositMethods() {
+            document.getElementById('deposit-method-list').classList.remove('hidden');
+            document.getElementById('deposit-amount-step').classList.add('hidden');
+        }
+
+        function setDepositAmount(amt) {
+            document.getElementById('deposit-usd-input').value = amt;
+            updateDepositConversion();
+        }
+
+        function updateDepositConversion() {
+            const usd = parseFloat(document.getElementById('deposit-usd-input').value) || 0;
+            const kes = Math.round(usd * KES_PER_USD);
+            document.getElementById('deposit-kes-amount').textContent = `KES ${kes.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            document.getElementById('btn-confirm-deposit').textContent = state.selectedGateway === 'CARD'
+                ? `Continue to Card Checkout ($${usd.toFixed(2)})`
+                : `Send M-Pesa Prompt ($${usd.toFixed(2)})`;
+        }
+
+        async function executeDeposit() {
+            const amt = parseFloat(document.getElementById('deposit-usd-input').value);
+            if (isNaN(amt) || amt < MIN_DEPOSIT) {
+                showToast('Minimum deposit on GTN Binary Options is $5.00', 'error');
+                return;
+            }
+            if (!authToken || state.accountType !== 'LIVE') {
+                showToast('Sign in and switch to your Live account to make a real deposit.', 'error');
+                return;
+            }
+            try {
+                const result = await apiRequest('/api/cashier/deposit', {
+                    method: 'POST',
+                    body: JSON.stringify({ amount: amt, method: state.selectedGateway })
+                });
+                await syncBackendState();
+                if (state.selectedGateway === 'CARD') {
+                    if (!result.checkoutUrl) throw new Error('Secure card checkout link was not provided.');
+                    window.location.assign(result.checkoutUrl);
+                    return;
+                }
+                closeModal('modal-cashier');
+                startPaymentStatusPolling(result.transaction.reference);
+                showToast(`M-Pesa prompt sent to your registered number. Enter your PIN on your phone to approve.`, 'info');
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        function startPaymentStatusPolling(reference) {
+            if (paymentPollTimer) clearInterval(paymentPollTimer);
+            let attempts = 0;
+            paymentPollTimer = setInterval(async () => {
+                attempts += 1;
+                try {
+                    const result = await apiRequest(`/api/cashier/status/${encodeURIComponent(reference)}`);
+                    if (result.status === 'COMPLETED') {
+                        clearInterval(paymentPollTimer);
+                        paymentPollTimer = null;
+                        await syncBackendState();
+                        showToast('M-Pesa deposit confirmed and your Live balance was updated.', 'success');
+                    } else if (result.status === 'FAILED' || attempts >= 36) {
+                        clearInterval(paymentPollTimer);
+                        paymentPollTimer = null;
+                        if (result.status === 'FAILED') showToast('M-Pesa payment was not completed.', 'error');
+                    }
+                } catch (error) {
+                    clearInterval(paymentPollTimer);
+                    paymentPollTimer = null;
+                    showToast(error.message, 'error');
+                }
+            }, 5000);
+        }
+
+        function setMaxWithdraw() {
+            document.getElementById('withdraw-usd-input').value = state.liveBalance.toFixed(2);
+        }
+
+        async function executeWithdraw() {
+            const amt = parseFloat(document.getElementById('withdraw-usd-input').value);
+            const dest = document.getElementById('withdraw-dest-input').value.trim();
+
+            if (isNaN(amt) || amt < MIN_WITHDRAWAL) {
+                showToast('Minimum withdrawal amount is $10.00 profit.', 'error');
+                return;
+            }
+            if (state.liveBalance < amt) {
+                showToast('Insufficient Live Account balance for withdrawal.', 'error');
+                return;
+            }
+
+            if (!authToken) {
+                showToast('Sign in to request a withdrawal.', 'error');
+                return;
+            }
+            try {
+                const result = await apiRequest('/api/cashier/withdraw', {
+                    method: 'POST',
+                    body: JSON.stringify({ amount: amt })
+                });
+                await syncBackendState();
+                closeModal('modal-cashier');
+                showToast(`Withdrawal ${result.transaction.status.toLowerCase()}: ${result.transaction.id}`, 'info');
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        function renderCashierHistory() {
+            const list = document.getElementById('cashier-history-list');
+            if (!list) return;
+
+            if (state.transactions.length === 0) {
+                list.innerHTML = `<div class="py-8 text-center text-xs text-emerald-300/55">No deposits or withdrawals yet.</div>`;
+                return;
+            }
+
+            list.innerHTML = state.transactions.map(tx => {
+                const isDep = tx.type === 'DEPOSIT';
+                return `
+                    <div class="p-3 rounded-2xl bg-[#09110e] border border-[#1a2c24] flex items-center justify-between font-mono text-xs">
+                        <div>
+                            <div class="font-bold ${isDep ? 'text-[#00ffc4]' : 'text-amber-400'}">${tx.type} • ${tx.method}</div>
+                            <div class="text-[10px] text-emerald-300/55">${tx.id} • ${tx.time}</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-extrabold text-white">${isDep ? '+' : '-'}$${tx.amount.toFixed(2)}</div>
+                            <div class="text-[10px] text-emerald-300/70">${tx.status}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        /**
+         * 5A. AI ENTRY SCANNER LOGIC
+         */
+        let lastAiRecommendation = null;
+
+        function runAiDeepScan() {
+            const cat = document.getElementById('ai-category-select').value;
+            const bar = document.getElementById('ai-scan-bar');
+            const counter = document.getElementById('ai-scan-counter');
+            const status = document.getElementById('ai-scan-status');
+            const resCard = document.getElementById('ai-result-card');
+
+            resCard.classList.add('hidden');
+            let step = 0;
+            const timer = setInterval(() => {
+                step++;
+                counter.textContent = `${step}/12`;
+                bar.style.width = `${(step / 12) * 100}%`;
+                status.textContent = `Scanning synthetic index ${step}/12...`;
+
+                if (step >= 12) {
+                    clearInterval(timer);
+                    status.textContent = 'Scan complete';
+
+                    const marketKeys = Object.keys(MARKETS);
+                    const bestSym = marketKeys[Math.floor(Math.random() * marketKeys.length)];
+                    const conf = (86 + Math.random() * 9).toFixed(1);
+
+                    let side = 'PRIMARY';
+                    let signalText = 'EVEN';
+                    let digit = 4;
+
+                    if (cat === 'risefall') {
+                        side = Math.random() > 0.5 ? 'PRIMARY' : 'SECONDARY';
+                        signalText = side === 'PRIMARY' ? 'RISE ▲' : 'FALL ▼';
+                    } else if (cat === 'evenodd') {
+                        side = Math.random() > 0.5 ? 'PRIMARY' : 'SECONDARY';
+                        signalText = side === 'PRIMARY' ? 'EVEN' : 'ODD';
+                    } else if (cat === 'overunder') {
+                        digit = 4;
+                        side = 'PRIMARY';
+                        signalText = 'OVER 4';
+                    } else {
+                        digit = Math.floor(Math.random() * 10);
+                        side = 'SECONDARY';
+                        signalText = `DIFFER ${digit}`;
+                    }
+
+                    lastAiRecommendation = { sym: bestSym, cat, side, digit, signalText };
+                    document.getElementById('ai-result-conf').textContent = `${conf}% CONF`;
+                    document.getElementById('ai-result-title').textContent = `${MARKETS[bestSym].name} → ${signalText}`;
+                    resCard.classList.remove('hidden');
+                    playTone('win');
+                }
+            }, 90);
+        }
+
+        function loadDeepScannerBot() {
+            if (!lastAiRecommendation) {
+                runAiDeepScan();
+                return;
+            }
+            document.getElementById('market-selector').value = lastAiRecommendation.sym;
+            changeMarket(lastAiRecommendation.sym);
+            setContractMode(lastAiRecommendation.cat);
+            if (lastAiRecommendation.cat === 'overunder' || lastAiRecommendation.cat === 'matchdiff') {
+                selectTargetDigit(lastAiRecommendation.digit);
+            }
+            closeModal('modal-ai');
+            showToast(`Loaded AI setup: ${MARKETS[lastAiRecommendation.sym].name} (${lastAiRecommendation.signalText})`, 'success');
+        }
+
+        /**
+         * 5B. POSITIONS DRAWER
+         */
+        function switchPosTab(tab) {
+            state.activePosTab = tab;
+            ['open', 'closed', 'history'].forEach(t => {
+                const btn = document.getElementById(`postab-${t}`);
+                btn.className = t === tab
+                    ? 'pb-2 border-b-2 border-[#00ffc4] text-white cursor-pointer'
+                    : 'pb-2 border-b-2 border-transparent text-emerald-300/60 hover:text-white cursor-pointer';
+            });
+            renderPositionsDrawer();
+        }
+
+        function renderPositionsDrawer() {
+            const openList = state.positions.filter(p => p.status === 'OPEN');
+            const closedList = state.positions.filter(p => p.status !== 'OPEN');
+
+            document.getElementById('pos-open-count').textContent = openList.length;
+            document.getElementById('pos-closed-count').textContent = closedList.length;
+            document.getElementById('session-open-footer').textContent = `${openList.length} open positions`;
+
+            const badge = document.getElementById('bottom-open-badge');
+            badge.textContent = openList.length;
+            badge.classList.toggle('hidden', openList.length === 0);
+
+            document.getElementById('session-wl-summary').textContent =
+                `${state.sessionWins + state.sessionLosses} trades (${state.sessionWins}W / ${state.sessionLosses}L)`;
+
+            const pnlEl = document.getElementById('session-pnl-summary');
+            pnlEl.textContent = `${state.sessionPnL >= 0 ? '+' : '-'}${Math.abs(state.sessionPnL).toFixed(2)} USD`;
+            pnlEl.className = `font-extrabold text-sm tabular-nums ${state.sessionPnL >= 0 ? 'text-[#00ffc4]' : 'text-rose-400'}`;
+
+            const body = document.getElementById('positions-list-body');
+            const items = state.activePosTab === 'open'
+                ? openList
+                : state.activePosTab === 'closed'
+                    ? closedList
+                    : state.positions;
+
+            if (items.length === 0) {
+                body.innerHTML = `
+                    <div class="py-20 text-center space-y-2">
+                        <div class="w-12 h-12 rounded-full bg-[#111d17] border border-[#1a2c24] flex items-center justify-center mx-auto">
+                            <i data-lucide="target" class="w-5 h-5 text-[#00ffc4]"></i>
+                        </div>
+                        <div class="font-bold text-sm text-white">No ${state.activePosTab} positions</div>
+                        <p class="text-xs text-emerald-300/60">Your active and settled trades will appear here</p>
+                    </div>
+                `;
+                lucide.createIcons();
+                return;
+            }
+
+            body.innerHTML = items.map(p => {
+                const statusBadge = p.status === 'OPEN'
+                    ? '<span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold text-[10px]">OPEN</span>'
+                    : p.status === 'WON'
+                        ? '<span class="px-2 py-0.5 rounded bg-[#00ffc4]/20 text-[#00ffc4] font-bold text-[10px]">WON +80%</span>'
+                        : '<span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 font-bold text-[10px]">LOST</span>';
+
+                return `
+                    <div class="p-3.5 rounded-2xl bg-[#111d17] border border-[#1a2c24] font-mono text-xs space-y-1.5">
+                        <div class="flex items-center justify-between">
+                            <span class="font-extrabold text-white">${p.label} • ${p.market}</span>
+                            ${statusBadge}
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] text-emerald-300/65">
+                            <span>Stake: $${p.stake.toFixed(2)} (${p.accountType})</span>
+                            <span class="font-bold ${p.pnl >= 0 ? 'text-[#00ffc4]' : 'text-rose-400'}">
+                                ${p.status === 'OPEN' ? 'Settling...' : (p.pnl >= 0 ? `+$${p.pnl.toFixed(2)}` : `-$${Math.abs(p.pnl).toFixed(2)}`)}
+                            </span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            lucide.createIcons();
+        }
+
+        /**
+         * 5C. LIVE CHAT DRAWER
+         */
+        function sendChatMessage(e) {
+            e.preventDefault();
+            const inp = document.getElementById('chat-input');
+            const text = inp.value.trim();
+            if (!text) return;
+
+            const feed = document.getElementById('chat-messages-feed');
+            const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            feed.insertAdjacentHTML('beforeend', `
+                <div class="ml-auto max-w-[80%] bg-gradient-to-br from-[#00ffc4] to-cyan-400 text-[#09110e] rounded-2xl rounded-tr-sm p-3 text-xs font-semibold">
+                    <div>${text}</div>
+                    <div class="text-[10px] font-mono opacity-75 text-right mt-1">${nowStr}</div>
+                </div>
+            `);
+            inp.value = '';
+            feed.scrollTop = feed.scrollHeight;
+
+            setTimeout(() => {
+                feed.insertAdjacentHTML('beforeend', `
+                    <div class="max-w-[82%] bg-[#111d17] border border-[#1a2c24] rounded-2xl rounded-tl-sm p-3 text-xs text-emerald-100">
+                        <div>Thanks for reaching out! An agent has logged your inquiry. Remember: Live deposits start at <strong>$5.00</strong>, withdrawals at <strong>$10.00</strong>, and all contracts pay <strong>80% fixed profit</strong>.</div>
+                        <div class="text-[10px] font-mono text-[#00ffc4] mt-1">Agent Sarah • Just now</div>
+                    </div>
+                `);
+                feed.scrollTop = feed.scrollHeight;
+            }, 900);
+        }
+
+        /**
+         * 7 & 8. REFER & EARN + ACCOUNT SETTINGS & KYC
+         */
+        function syncUserProfileUI() {
+            document.getElementById('prof-email').value = state.user.email;
+            document.getElementById('prof-name').value = state.user.fullName;
+            document.getElementById('prof-phone').value = getRegisteredPhone();
+            document.getElementById('prof-country').value = state.user.country;
+            document.getElementById('withdraw-dest-input').value = getRegisteredPhone();
+
+            document.getElementById('user-ref-code').textContent = state.user.referralCode;
+            document.getElementById('user-ref-link').value = `https://gtnbinary.com/signup?ref=${state.user.referralCode}`;
+
+            if (state.user.kycStatus === 'pending_review') {
+                document.getElementById('kyc-status-badge').textContent = 'pending review';
+                document.getElementById('kyc-status-badge').className = 'px-2.5 py-1 rounded-full bg-[#00ffc4]/15 border border-[#00ffc4]/40 text-[#00ffc4] font-mono font-bold text-[11px] shrink-0';
+                document.getElementById('kyc-status-desc').textContent = 'Documents submitted. Compliance review takes under 2 hours.';
+            }
+        }
+
+        function copyReferralLink() {
+            const inp = document.getElementById('user-ref-link');
+            inp.select();
+            document.execCommand('copy');
+            showToast('Referral link copied to clipboard!', 'success');
+        }
+
+        function shareReferralLink() {
+            copyReferralLink();
+            showToast('Ready to share your GTN Binary Options invite link!', 'info');
+        }
+
+        function switchAccountSubTab(sub) {
+            ['profile', 'password', '2fa', 'kyc', 'referrals'].forEach(s => {
+                document.getElementById(`acct-subtab-${s}`).className = s === sub
+                    ? 'acct-subtab px-3.5 py-2.5 rounded-xl bg-[#111d17] border border-[#00ffc4]/50 text-[#00ffc4] flex items-center gap-1.5 shrink-0 cursor-pointer'
+                    : 'acct-subtab px-3.5 py-2.5 rounded-xl text-emerald-200/70 hover:text-white flex items-center gap-1.5 shrink-0 cursor-pointer';
+                document.getElementById(`acct-panel-${s}`).classList.toggle('hidden', s !== sub);
+            });
+            lucide.createIcons();
+        }
+
+        function saveProfileChanges() {
+            state.user.email = document.getElementById('prof-email').value.trim();
+            state.user.fullName = document.getElementById('prof-name').value.trim();
+            state.user.country = document.getElementById('prof-country').value.trim().toUpperCase();
+            saveState();
+            showToast('Profile information updated!', 'success');
+        }
+
+        function handleUpdatePassword() {
+            const p1 = document.getElementById('new-pass-input').value;
+            const p2 = document.getElementById('conf-pass-input').value;
+            if (p1.length < 8) {
+                showToast('New password must be at least 8 characters.', 'error');
+                return;
+            }
+            if (p1 !== p2) {
+                showToast('Passwords do not match.', 'error');
+                return;
+            }
+            document.getElementById('new-pass-input').value = '';
+            document.getElementById('conf-pass-input').value = '';
+            showToast('Account password updated securely.', 'success');
+        }
+
+        function toggleTwoFactor() {
+            state.user.twoFactor = !state.user.twoFactor;
+            const btn = document.getElementById('btn-toggle-2fa');
+            btn.textContent = state.user.twoFactor ? '2FA Enabled ✓' : 'Enable 2FA';
+            saveState();
+            showToast(state.user.twoFactor ? 'Two-Factor Authentication enabled.' : 'Two-Factor Authentication disabled.', 'info');
+        }
+
+        let kycFrontUploaded = false;
+        function handleKycFileSelect(slot, input) {
+            if (!input.files || !input.files[0]) return;
+            const fileName = input.files[0].name;
+            if (slot === 'front') {
+                kycFrontUploaded = true;
+                document.getElementById('kyc-label-front').textContent = `ID front: ${fileName}`;
+            } else if (slot === 'back') {
+                document.getElementById('kyc-label-back').textContent = `ID back: ${fileName}`;
+            } else {
+                document.getElementById('kyc-label-selfie').textContent = `Selfie: ${fileName}`;
+            }
+            showToast(`Attached ${fileName}`, 'info');
+        }
+
+        function submitKycReview() {
+            if (!kycFrontUploaded) {
+                showToast('Please attach ID front (required) before submitting.', 'error');
+                return;
+            }
+            state.user.kycStatus = 'pending_review';
+            syncUserProfileUI();
+            saveState();
+            showToast('Identity documents submitted for verification review!', 'success');
+        }
+
+        /**
+         * Generic Modal Open / Close
+         */
+        function openModal(id) {
+            document.getElementById(id).classList.remove('hidden');
+            lucide.createIcons();
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.add('hidden');
+        }
+
+        window.addEventListener('resize', drawPriceCanvas);
+
+        window.onload = function () {
+            loadState();
+            seedInitialTicks();
+            initDigitPickerButtons();
+            renderDigitStrip(4);
+            startMarketStream();
+
+            if (state.isAuthenticated) {
+                enterAppShell();
+                connectBackendSocket();
+                syncBackendState();
+            } else {
+                document.getElementById('view-auth').classList.remove('hidden');
+            }
+            const paymentResult = new URLSearchParams(location.search).get('payment');
+            if (paymentResult) {
+                showToast(
+                    paymentResult === 'success' ? 'Card payment confirmed and your Live balance was updated.' :
+                    paymentResult === 'pending' ? 'Card payment is still processing. Your balance will update when confirmed.' :
+                    'Card payment was not completed.',
+                    paymentResult === 'success' ? 'success' : paymentResult === 'pending' ? 'info' : 'error'
+                );
+                history.replaceState(null, '', location.pathname);
+            }
+            lucide.createIcons();
+        };
+    </script>
+</body>
+</html>
