@@ -950,3 +950,482 @@ app.post('/api/auth/login', async (req, res) => {
 // ============================================================
 // END OF PART 2
 // ============================================================
+// ============================================================
+// PART 3: WALLET MANAGEMENT AND TRADE EXECUTION
+// ============================================================
+
+// ------------------------------------------------------------
+// GET WALLET
+// ------------------------------------------------------------
+
+async function getWallet(client, userId, accountType, lock = false) {
+    const result = await client.query(
+        `SELECT *
+         FROM wallets
+         WHERE user_id = $1
+           AND account_type = $2
+         ${lock ? 'FOR UPDATE' : ''}`,
+        [userId, accountType]
+    );
+
+    if (!result.rows.length) {
+        throw new Error('Wallet not found.');
+    }
+
+    return result.rows[0];
+}
+
+// ------------------------------------------------------------
+// RECORD WALLET LEDGER ENTRY
+// ------------------------------------------------------------
+
+async function recordLedger(client, {
+    userId,
+    walletId,
+    accountType,
+    entryType,
+    amount,
+    balanceAfter,
+    idempotencyKey,
+    description
+}) {
+    await client.query(
+        `INSERT INTO wallet_ledger (
+            user_id,
+            wallet_id,
+            account_type,
+            entry_type,
+            amount,
+            balance_after,
+            idempotency_key,
+            description
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+            userId,
+            walletId,
+            accountType,
+            entryType,
+            amount,
+            balanceAfter,
+            idempotencyKey,
+            description
+        ]
+    );
+}
+
+// ------------------------------------------------------------
+// CONTRACT RESULT CALCULATION
+// ------------------------------------------------------------
+
+function getContractResult(contractType, entryPrice, exitPrice, barrier) {
+    const entry = Number(entryPrice);
+    const exit = Number(exitPrice);
+
+    const exitInteger = Math.floor(Math.abs(exit));
+    const exitDigit = exitInteger % 10;
+
+    switch (contractType) {
+        case 'RISE':
+            return exit > entry;
+
+        case 'FALL':
+            return exit < entry;
+
+        case 'EVEN':
+            return exitDigit % 2 === 0;
+
+        case 'ODD':
+            return exitDigit % 2 !== 0;
+
+        case 'OVER':
+            return exitDigit > barrier;
+
+        case 'UNDER':
+            return exitDigit < barrier;
+
+        case 'MATCH':
+            return exitDigit === barrier;
+
+        case 'DIFF':
+            return exitDigit !== barrier;
+
+        default:
+            throw new Error('Invalid contract type.');
+    }
+}
+
+// ------------------------------------------------------------
+// PLACE TRADE
+// ------------------------------------------------------------
+
+app.post('/api/trades/place', authenticate, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const {
+            accountType = 'DEMO',
+            symbol = 'VOL_10_1S',
+            contractType,
+            type,
+            stake,
+            amount,
+            duration = 2,
+            barrier
+        } = req.body;
+
+        const selectedAccount = String(accountType).toUpperCase();
+        const selectedContract = String(
+            contractType || type || ''
+        ).toUpperCase();
+
+        const selectedSymbol = String(symbol).toUpperCase();
+
+        const tradeStake = roundMoney(
+            Number(stake !== undefined ? stake : amount)
+        );
+
+        const tradeDuration = Number(duration);
+        const selectedBarrier = Number(barrier);
+
+        if (!isValidAccountType(selectedAccount)) {
+            return res.status(400).json({
+                error: 'Invalid account type.'
+            });
+        }
+
+        if (!isValidContractType(selectedContract)) {
+            return res.status(400).json({
+                error: 'Invalid contract type.'
+            });
+        }
+
+        if (!markets[selectedSymbol]) {
+            return res.status(400).json({
+                error: 'Invalid market symbol.'
+            });
+        }
+
+        if (
+            !Number.isFinite(tradeStake) ||
+            tradeStake < PLATFORM_RULES.MIN_STAKE_USD
+        ) {
+            return res.status(400).json({
+                error: `Minimum trade stake is $${PLATFORM_RULES.MIN_STAKE_USD}.`
+            });
+        }
+
+        if (
+            !Number.isInteger(tradeDuration) ||
+            tradeDuration < 2 ||
+            tradeDuration > 3600
+        ) {
+            return res.status(400).json({
+                error: 'Trade duration must be between 2 and 3600 seconds.'
+            });
+        }
+
+        if (
+            ['OVER', 'UNDER', 'MATCH', 'DIFF'].includes(selectedContract) &&
+            (!Number.isInteger(selectedBarrier) ||
+                selectedBarrier < 0 ||
+                selectedBarrier > 9)
+        ) {
+            return res.status(400).json({
+                error: 'Barrier must be a whole number from 0 to 9.'
+            });
+        }
+
+        const entryPrice = getMarketPrice(selectedSymbol);
+        const tradeId = crypto.randomUUID();
+        const reference = generateReference('TRADE');
+
+        const trade = await withTransaction(async (client) => {
+            const wallet = await getWallet(
+                client,
+                userId,
+                selectedAccount,
+                true
+            );
+
+            const currentBalance = toNumber(wallet.balance);
+            const reservedBalance = toNumber(wallet.reserved_balance);
+
+            const availableBalance = roundMoney(
+                currentBalance - reservedBalance
+            );
+
+            if (availableBalance < tradeStake) {
+                throw new Error('INSUFFICIENT_FUNDS');
+            }
+
+            const newBalance = roundMoney(
+                currentBalance - tradeStake
+            );
+
+            await client.query(
+                `UPDATE wallets
+                 SET balance = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [newBalance, wallet.id]
+            );
+
+            await recordLedger(client, {
+                userId,
+                walletId: wallet.id,
+                accountType: selectedAccount,
+                entryType: 'TRADE_STAKE',
+                amount: -tradeStake,
+                balanceAfter: newBalance,
+                idempotencyKey: `TRADE_STAKE_${tradeId}`,
+                description: `Stake for ${selectedContract} trade`
+            });
+
+            const expiresAt = new Date(
+                Date.now() + tradeDuration * 1000
+            );
+
+            const insertedTrade = await client.query(
+                `INSERT INTO trades (
+                    id,
+                    user_id,
+                    wallet_id,
+                    account_type,
+                    symbol,
+                    contract_type,
+                    stake,
+                    entry_price,
+                    barrier,
+                    duration_seconds,
+                    status,
+                    opened_at,
+                    expires_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6,
+                    $7, $8, $9, $10,
+                    'OPEN', NOW(), $11
+                )
+                RETURNING *`,
+                [
+                    tradeId,
+                    userId,
+                    wallet.id,
+                    selectedAccount,
+                    selectedSymbol,
+                    selectedContract,
+                    tradeStake,
+                    entryPrice,
+                    barrier === undefined ? null : selectedBarrier,
+                    tradeDuration,
+                    expiresAt
+                ]
+            );
+
+            await client.query(
+                `INSERT INTO transactions (
+                    user_id,
+                    reference,
+                    type,
+                    amount,
+                    currency,
+                    status,
+                    provider,
+                    provider_reference,
+                    description
+                )
+                VALUES (
+                    $1, $2, 'TRADE', $3, 'USD',
+                    'COMPLETED', 'GTN', $2, $4
+                )`,
+                [
+                    userId,
+                    reference,
+                    tradeStake,
+                    `${selectedContract} trade stake`
+                ]
+            );
+
+            return insertedTrade.rows[0];
+        });
+
+        return res.status(201).json({
+            message: 'Trade placed successfully.',
+            trade: {
+                id: trade.id,
+                symbol: trade.symbol,
+                contractType: trade.contract_type,
+                accountType: trade.account_type,
+                stake: toNumber(trade.stake),
+                entryPrice: toNumber(trade.entry_price),
+                barrier: trade.barrier,
+                duration: trade.duration_seconds,
+                status: trade.status,
+                openedAt: trade.opened_at,
+                expiresAt: trade.expires_at
+            }
+        });
+
+    } catch (error) {
+        if (error.message === 'INSUFFICIENT_FUNDS') {
+            return res.status(400).json({
+                error: 'Insufficient available wallet balance.'
+            });
+        }
+
+        console.error('Trade placement error:', error.message);
+
+        return res.status(500).json({
+            error: 'Could not place trade.'
+        });
+    }
+});
+
+// ------------------------------------------------------------
+// SETTLE EXPIRED TRADES
+// ------------------------------------------------------------
+
+let settlementRunning = false;
+
+async function settleExpiredTrades() {
+    if (settlementRunning) return;
+
+    settlementRunning = true;
+
+    try {
+        const expired = await query(
+            `SELECT id
+             FROM trades
+             WHERE status = 'OPEN'
+               AND expires_at <= NOW()
+             ORDER BY expires_at ASC
+             LIMIT 50`
+        );
+
+        for (const item of expired.rows) {
+            await withTransaction(async (client) => {
+                const tradeResult = await client.query(
+                    `SELECT *
+                     FROM trades
+                     WHERE id = $1
+                       AND status = 'OPEN'
+                       AND expires_at <= NOW()
+                     FOR UPDATE`,
+                    [item.id]
+                );
+
+                if (!tradeResult.rows.length) return;
+
+                const trade = tradeResult.rows[0];
+
+                const wallet = await getWallet(
+                    client,
+                    trade.user_id,
+                    trade.account_type,
+                    true
+                );
+
+                const exitPrice = getMarketPrice(trade.symbol);
+
+                const won = getContractResult(
+                    trade.contract_type,
+                    trade.entry_price,
+                    exitPrice,
+                    trade.barrier === null ? 0 : Number(trade.barrier)
+                );
+
+                const stake = toNumber(trade.stake);
+
+                const profit = won
+                    ? roundMoney(stake * PLATFORM_RULES.PAYOUT_RATE)
+                    : 0;
+
+                const payout = won
+                    ? roundMoney(stake + profit)
+                    : 0;
+
+                const newBalance = roundMoney(
+                    toNumber(wallet.balance) + payout
+                );
+
+                if (won) {
+                    await client.query(
+                        `UPDATE wallets
+                         SET balance = $1,
+                             updated_at = NOW()
+                         WHERE id = $2`,
+                        [newBalance, wallet.id]
+                    );
+
+                    await recordLedger(client, {
+                        userId: trade.user_id,
+                        walletId: wallet.id,
+                        accountType: trade.account_type,
+                        entryType: 'TRADE_WIN',
+                        amount: payout,
+                        balanceAfter: newBalance,
+                        idempotencyKey: `TRADE_WIN_${trade.id}`,
+                        description: `Winning ${trade.contract_type} trade payout`
+                    });
+                }
+
+                await client.query(
+                    `UPDATE trades
+                     SET status = 'CLOSED',
+                         result = $1,
+                         exit_price = $2,
+                         profit = $3,
+                         payout = $4,
+                         closed_at = NOW()
+                     WHERE id = $5`,
+                    [
+                        won ? 'WIN' : 'LOSS',
+                        exitPrice,
+                        profit,
+                        payout,
+                        trade.id
+                    ]
+                );
+
+                await client.query(
+                    `INSERT INTO transactions (
+                        user_id,
+                        reference,
+                        type,
+                        amount,
+                        currency,
+                        status,
+                        provider,
+                        provider_reference,
+                        description
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, 'USD',
+                        'COMPLETED', 'GTN', $2, $5
+                    )`,
+                    [
+                        trade.user_id,
+                        generateReference('SETTLEMENT'),
+                        won ? 'TRADE_WIN' : 'TRADE_LOSS',
+                        won ? payout : stake,
+                        won
+                            ? 'Winning trade payout'
+                            : 'Losing trade stake'
+                    ]
+                );
+            });
+        }
+
+    } catch (error) {
+        console.error('Trade settlement error:', error.message);
+    } finally {
+        settlementRunning = false;
+    }
+}
+
+setInterval(settleExpiredTrades, 1000);
+
+// ============================================================
+// END OF PART 3
+// ============================================================
