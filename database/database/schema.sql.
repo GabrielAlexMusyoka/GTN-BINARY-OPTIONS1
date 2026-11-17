@@ -479,17 +479,12 @@ ON payment_logs(processed);
 
 
 -- =====================================================
+-- -- =====================================================
 -- 10. ADMIN ACTIVITY LOG
 -- =====================================================
 
 CREATE TABLE IF NOT EXISTS admin_activity_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-ALTER TABLE withdrawals
-DROP CONSTRAINT IF EXISTS withdrawals_reviewed_by_fkey;
-
-ALTER TABLE withdrawals
-ADD CONSTRAINT withdrawals_reviewed_by_fkey
-FOREIGN KEY (reviewed_by) REFERENCES admins(id);
 
     admin_id UUID REFERENCES admins(id),
 
@@ -509,5 +504,17 @@ ON admin_activity_logs(created_at);
 
 
 -- =====================================================
--- END OF GTN DATABASE SCHEMA
+-- WITHDRAWAL ADMIN FOREIGN KEY
 -- =====================================================
+
+ALTER TABLE withdrawals
+DROP CONSTRAINT IF EXISTS withdrawals_reviewed_by_fkey;
+
+ALTER TABLE withdrawals
+ADD CONSTRAINT withdrawals_reviewed_by_fkey
+FOREIGN KEY (reviewed_by) REFERENCES admins(id);
+
+
+-- =====================================================
+-- END OF GTN DATABASE SCHEMA
+-- ================================================================================
