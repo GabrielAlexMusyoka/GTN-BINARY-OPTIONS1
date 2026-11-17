@@ -1,267 +1,386 @@
+Jim// ============================================================
+// GTN BINARY OPTIONS - POSTGRESQL BACKEND
+// Part 1: Server setup, security and market engine
+// ============================================================
+
+require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
-const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-require('dotenv').config();
+
+const { pool, query, testConnection } = require('./database/db');
 
 const app = express();
 const server = http.createServer(app);
+
 const wss = new WebSocket.Server({ server });
 
+const PORT = Number(process.env.PORT || 4000);
+
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+    throw new Error(
+        'JWT_SECRET must be configured with at least 32 characters.'
+    );
+}
+
+const JWT_SECRET = process.env.JWT_SECRET;
+
+const KES_PER_USD = Number(process.env.KES_PER_USD || 130);
+
+if (!Number.isFinite(KES_PER_USD) || KES_PER_USD <= 0) {
+    throw new Error('KES_PER_USD must be a valid positive number.');
+}
+
+const PLATFORM_RULES = {
+    PAYOUT_RATE: 0.80,
+    MIN_DEPOSIT_USD: 5,
+    MIN_WITHDRAW_USD: 10,
+    MIN_STAKE_USD: 5,
+    KES_PER_USD
+};
+
+// ============================================================
+// MIDDLEWARE
+// ============================================================
+
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
 app.use(express.static(__dirname));
 
 app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/frontend.html');
+    res.sendFile(__dirname + '/frontend.html');
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'gtn_gold_obsidian_secret_2026';
-const PORT = process.env.PORT || 4000;
+// ============================================================
+// GENERAL HELPERS
+// ============================================================
 
-// Platform Financial Rules
-const PLATFORM_RULES = {
-  PAYOUT_RATE: 0.80,       // 80% fixed profit
-  MIN_DEPOSIT_USD: 5.00,   // $5.00 min live deposit
-  MIN_WITHDRAW_USD: 10.00, // $10.00 min live withdrawal
-  MIN_STAKE_USD: 5.00,     // $5.00 min trade stake
-  KES_PER_USD: 129.98
-};
-
-// In-Memory Data Store (Replace with PostgreSQL / MongoDB in production)
-const db = {
-  users: new Map(),
-  trades: [],
-  transactions: [],
-  kycSubmissions: new Map()
-};
-const depositVerificationLocks = new Map();
-
-function formatKenyaPhone(user) {
-  if (user.country !== 'KE') throw new Error('M-Pesa payouts are currently available for Kenyan accounts only.');
-  let digits = String(user.phone || '').replace(/\D/g, '');
-  if (digits.startsWith('0')) digits = digits.slice(1);
-  if (!digits.startsWith('254')) digits = `254${digits}`;
-  if (!/^254[17]\d{8}$/.test(digits)) throw new Error('Add a valid Kenyan mobile number to your account before making a payment.');
-  return digits;
+function generateReference(prefix = 'GTN') {
+    return `${prefix}-${Date.now()}-${crypto.randomBytes(5).toString('hex')}`;
 }
 
-function paymentConfigError() {
-  if (!process.env.FLW_SECRET_KEY) {
-    const error = new Error('Payments are not configured. Set FLW_SECRET_KEY in the server environment.');
-    error.status = 503;
-    return error;
-  }
-  if ((process.env.FLW_ENV || 'sandbox').toLowerCase() !== 'sandbox') {
-    const error = new Error('Live payments are disabled in this in-memory build. Use Flutterwave sandbox credentials.');
-    error.status = 503;
-    return error;
-  }
-  if (!process.env.FLW_SECRET_KEY.startsWith('FLWSECK_TEST-')) {
-    const error = new Error('Use a Flutterwave sandbox secret key beginning with FLWSECK_TEST-.');
-    error.status = 503;
-    return error;
-  }
-  return null;
+function generateReferralCode() {
+    return 'GTN' + crypto.randomBytes(5).toString('hex').toUpperCase();
 }
 
-async function flutterwaveRequest(path, body) {
-  const configError = paymentConfigError();
-  if (configError) throw configError;
-  const apiBase = (process.env.FLW_API_BASE || 'https://api.flutterwave.com/v3').replace(/\/+$/, '');
-  const response = await fetch(`${apiBase}${path}`, {
-    method: body ? 'POST' : 'GET',
-    headers: {
-      Authorization: `Bearer ${process.env.FLW_SECRET_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    ...(body ? { body: JSON.stringify(body) } : {})
-  });
-  const result = await response.json();
-  if (!response.ok || result.status === 'error') {
-    const error = new Error(result.message || `Flutterwave request failed (${response.status}).`);
-    error.status = 502;
-    throw error;
-  }
-  return result;
+function toNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
 }
 
-function findTransactionByReference(reference) {
-  return db.transactions.find(tx => tx.reference === reference);
+function roundMoney(value) {
+    return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
-async function verifyFlutterwaveDeposit(tx, providerTransactionId) {
-  const activeVerification = depositVerificationLocks.get(tx.reference);
-  if (activeVerification) return activeVerification;
-  if (tx.status === 'COMPLETED') return tx;
-
-  const verification = verifyFlutterwaveDepositOnce(tx, providerTransactionId);
-  depositVerificationLocks.set(tx.reference, verification);
-  try {
-    return await verification;
-  } finally {
-    depositVerificationLocks.delete(tx.reference);
-  }
+function createToken(user) {
+    return jwt.sign(
+        {
+            sub: user.id,
+            email: user.email
+        },
+        JWT_SECRET,
+        { expiresIn: '7d' }
+    );
 }
 
-async function verifyFlutterwaveDepositOnce(tx, providerTransactionId) {
-  const result = await flutterwaveRequest(`/transactions/${encodeURIComponent(providerTransactionId)}/verify`);
-  const payment = result.data;
-  if (!payment || String(payment.tx_ref) !== tx.reference) throw new Error('Flutterwave transaction reference did not match.');
-  if (String(payment.currency).toUpperCase() !== tx.currency) throw new Error('Flutterwave transaction currency did not match.');
+function normalizePhone(phone) {
+    if (!phone) return null;
 
-  const status = String(payment.status || '').toLowerCase();
-  if (status === 'successful' || status === 'success') {
-    if (Number(payment.amount) < tx.providerAmount) throw new Error('Flutterwave confirmed an amount lower than the requested deposit.');
-    if (tx.status !== 'COMPLETED') {
-      const user = db.users.get(tx.userEmail);
-      if (!user) throw new Error('The account for this payment could not be found.');
-      user.liveBalance = Number((user.liveBalance + tx.amount).toFixed(2));
-      tx.status = 'COMPLETED';
-      tx.providerTransactionId = String(payment.id);
-      tx.completedAt = new Date().toISOString();
+    let cleaned = String(phone).replace(/\D/g, '');
+
+    if (cleaned.startsWith('0')) {
+        cleaned = '254' + cleaned.substring(1);
+    } else if (cleaned.startsWith('7') || cleaned.startsWith('1')) {
+        cleaned = '254' + cleaned;
     }
-  } else if (['failed', 'cancelled', 'canceled'].includes(status)) {
-    tx.status = 'FAILED';
-  }
-  return tx;
-}
 
-async function verifyFlutterwaveTransfer(tx, transferId) {
-  const result = await flutterwaveRequest(`/transfers/${encodeURIComponent(transferId)}`);
-  const transfer = result.data;
-  if (!transfer || String(transfer.reference) !== tx.reference) throw new Error('Flutterwave transfer reference did not match.');
-
-  const status = String(transfer.status || '').toUpperCase();
-  if (['SUCCESSFUL', 'SUCCESS', 'COMPLETED'].includes(status)) {
-    tx.status = 'COMPLETED';
-    tx.completedAt = new Date().toISOString();
-  } else if (['FAILED', 'REVERSED'].includes(status) && tx.status !== 'FAILED') {
-    const user = db.users.get(tx.userEmail);
-    if (user && !tx.refunded) {
-      user.liveBalance = Number((user.liveBalance + tx.amount).toFixed(2));
-      tx.refunded = true;
+    if (!/^254[71]\d{8}$/.test(cleaned)) {
+        return null;
     }
-    tx.status = 'FAILED';
-  }
-  return tx;
+
+    return cleaned;
 }
 
-// Synthetic Volatility Indices Engine
+// ============================================================
+// POSTGRESQL TRANSACTION HELPER
+// ============================================================
+
+async function withTransaction(callback) {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const result = await callback(client);
+
+        await client.query('COMMIT');
+
+        return result;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+// ============================================================
+// AUTHENTICATION MIDDLEWARE
+// ============================================================
+
+async function authenticate(req, res, next) {
+    try {
+        const header = req.headers.authorization;
+
+        if (!header || !header.startsWith('Bearer ')) {
+            return res.status(401).json({
+                error: 'Authentication required.'
+            });
+        }
+
+        const token = header.split(' ')[1];
+
+        const decoded = jwt.verify(token, JWT_SECRET);
+
+        const result = await query(
+            `SELECT *
+             FROM users
+             WHERE id = $1
+             LIMIT 1`,
+            [decoded.sub]
+        );
+
+        if (!result.rows.length) {
+            return res.status(401).json({
+                error: 'User account not found.'
+            });
+        }
+
+        const user = result.rows[0];
+
+        if (user.account_status !== 'ACTIVE') {
+            return res.status(403).json({
+                error: 'Your account is suspended.'
+            });
+        }
+
+        req.user = user;
+
+        next();
+    } catch (error) {
+        if (error.name === 'TokenExpiredError' ||
+            error.name === 'JsonWebTokenError') {
+            return res.status(401).json({
+                error: 'Invalid or expired session.'
+            });
+        }
+
+        console.error('Authentication error:', error.message);
+
+        return res.status(500).json({
+            error: 'Authentication failed.'
+        });
+    }
+}
+
+// ============================================================
+// USER RESPONSE FORMAT
+// ============================================================
+
+async function getUserWallets(userId) {
+    const result = await query(
+        `SELECT account_type, balance, reserved_balance
+         FROM wallets
+         WHERE user_id = $1`,
+        [userId]
+    );
+
+    const wallets = {
+        DEMO: { balance: 1000, reservedBalance: 0 },
+        LIVE: { balance: 0, reservedBalance: 0 }
+    };
+
+    for (const wallet of result.rows) {
+        wallets[wallet.account_type] = {
+            balance: toNumber(wallet.balance),
+            reservedBalance: toNumber(wallet.reserved_balance)
+        };
+    }
+
+    return wallets;
+}
+
+async function formatUser(user) {
+    const wallets = await getUserWallets(user.id);
+
+    return {
+        id: user.id,
+        fullName: user.full_name,
+        email: user.email,
+        country: user.country,
+        phone: user.phone,
+        demoBalance: wallets.DEMO.balance,
+        liveBalance: wallets.LIVE.balance,
+        referralCode: user.referral_code,
+        referredBy: user.referred_by,
+        referralsCount: 0,
+        referralEarnings: 0,
+        kycStatus: user.kyc_status,
+        twoFactorEnabled: user.two_factor_enabled,
+        accountStatus: user.account_status,
+        createdAt: user.created_at
+    };
+}
+
+// ============================================================
+// SYNTHETIC INDICES ENGINE
+// ============================================================
+
 const markets = {
-  'VOL_10_1S': { name: 'Volatility 10 (1s) Index', price: 9450.34, vol: 0.35, history: [] },
-  'VOL_25':    { name: 'Volatility 25 Index',      price: 4120.80, vol: 0.65, history: [] },
-  'VOL_50':    { name: 'Volatility 50 Index',      price: 6890.15, vol: 1.10, history: [] },
-  'VOL_75':    { name: 'Volatility 75 Index',      price: 12450.90, vol: 1.85, history: [] },
-  'VOL_100':   { name: 'Volatility 100 Index',     price: 3210.45, vol: 2.40, history: [] }
+    VOL_10_1S: {
+        symbol: 'VOL_10_1S',
+        name: 'Volatility 10 (1s) Index',
+        price: 1000,
+        volatility: 0.0008
+    },
+
+    VOL_25: {
+        symbol: 'VOL_25',
+        name: 'Volatility 25 Index',
+        price: 2500,
+        volatility: 0.0015
+    },
+
+    VOL_50: {
+        symbol: 'VOL_50',
+        name: 'Volatility 50 Index',
+        price: 5000,
+        volatility: 0.0025
+    },
+
+    VOL_75: {
+        symbol: 'VOL_75',
+        name: 'Volatility 75 Index',
+        price: 7500,
+        volatility: 0.0035
+    },
+
+    VOL_100: {
+        symbol: 'VOL_100',
+        name: 'Volatility 100 Index',
+        price: 10000,
+        volatility: 0.0045
+    }
 };
 
-// Seed initial price history
-Object.keys(markets).forEach(sym => {
-  for (let i = 0; i < 60; i++) {
-    const delta = (Math.random() - 0.5) * markets[sym].vol;
-    markets[sym].price = Number((markets[sym].price + delta).toFixed(2));
-    markets[sym].history.push({ time: Date.now() - (60 - i) * 1000, price: markets[sym].price });
-  }
+const marketHistory = {};
+
+for (const symbol of Object.keys(markets)) {
+    marketHistory[symbol] = [];
+}
+
+function generateMarketTick() {
+    const tickPayload = {};
+
+    for (const symbol of Object.keys(markets)) {
+        const market = markets[symbol];
+
+        const movement =
+            (Math.random() - 0.5) *
+            market.price *
+            market.volatility;
+
+        market.price = Math.max(1, market.price + movement);
+
+        const tick = {
+            symbol,
+            name: market.name,
+            price: Number(market.price.toFixed(2)),
+            timestamp: new Date().toISOString()
+        };
+
+        marketHistory[symbol].push(tick);
+
+        if (marketHistory[symbol].length > 100) {
+            marketHistory[symbol].shift();
+        }
+
+        tickPayload[symbol] = tick;
+    }
+
+    return tickPayload;
+}
+
+function broadcastTick(data) {
+    const message = JSON.stringify({
+        type: 'TICK',
+        data
+    });
+
+    for (const client of wss.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(message);
+        }
+    }
+}
+
+wss.on('connection', (socket) => {
+    socket.send(JSON.stringify({
+        type: 'MARKET_HISTORY',
+        data: marketHistory
+    }));
 });
 
-// Tick Generator (1 tick per second)
 setInterval(() => {
-  const tickPayload = {};
-  Object.keys(markets).forEach(sym => {
-    const m = markets[sym];
-    const delta = (Math.random() - 0.5) * m.vol;
-    m.price = Number(Math.max(10, m.price + delta).toFixed(2));
-    const lastDigit = Number(m.price.toFixed(2).slice(-1));
-    const point = { time: Date.now(), price: m.price, lastDigit };
-    m.history.push(point);
-    if (m.history.length > 100) m.history.shift();
-    tickPayload[sym] = point;
-  });
-
-  // Settle active trades on new tick
-  settlePendingTrades(tickPayload);
-
-  // Broadcast live prices to connected clients
-  const msg = JSON.stringify({ type: 'TICK', data: tickPayload });
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) client.send(msg);
-  });
+    const ticks = generateMarketTick();
+    broadcastTick(ticks);
 }, 1000);
 
-function settlePendingTrades(tickPayload) {
-  const now = Date.now();
-  db.trades.forEach(trade => {
-    if (trade.status !== 'OPEN' || now < trade.expiresAt) return;
-    const tick = tickPayload[trade.symbol];
-    if (!tick) return;
+// ============================================================
+// MARKET HELPERS
+// ============================================================
 
-    const entry = trade.entryPrice;
-    const exit = tick.price;
-    const digit = tick.lastDigit;
-    let won = false;
+function getMarketPrice(symbol) {
+    const market = markets[symbol];
 
-    if (trade.contractType === 'RISE') won = exit > entry;
-    if (trade.contractType === 'FALL') won = exit < entry;
-    if (trade.contractType === 'EVEN') won = digit % 2 === 0;
-    if (trade.contractType === 'ODD')  won = digit % 2 !== 0;
-    if (trade.contractType === 'OVER') won = digit > trade.barrier;
-    if (trade.contractType === 'UNDER') won = digit < trade.barrier;
-    if (trade.contractType === 'MATCH') won = digit === trade.barrier;
-    if (trade.contractType === 'DIFF')  won = digit !== trade.barrier;
-
-    trade.exitPrice = exit;
-    trade.exitDigit = digit;
-    trade.status = won ? 'WON' : 'LOST';
-    trade.profit = won ? Number((trade.stake * PLATFORM_RULES.PAYOUT_RATE).toFixed(2)) : -trade.stake;
-
-    if (won) {
-      const user = db.users.get(trade.userEmail);
-      if (user) {
-        const totalReturn = Number((trade.stake + trade.profit).toFixed(2));
-        if (trade.accountType === 'LIVE') user.liveBalance = Number((user.liveBalance + totalReturn).toFixed(2));
-        else user.demoBalance = Number((user.demoBalance + totalReturn).toFixed(2));
-      }
+    if (!market) {
+        throw new Error('Invalid market symbol.');
     }
-  });
+
+    return Number(market.price.toFixed(2));
 }
 
-// Auth Middleware
-function authenticate(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ error: 'Missing token' });
-  try {
-    req.user = jwt.verify(header.split(' ')[1], JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
-  }
+function getMarketHistory(symbol) {
+    return marketHistory[symbol] || [];
 }
 
-// 1. Register Endpoint
-app.post('/api/auth/register', async (req, res) => {
-  const { fullName, email, country, phone, password, referralCode } = req.body;
-  if (!fullName || !email || !password || password.length < 6) {
-    return res.status(400).json({ error: 'Valid name, email, and 6+ char password required.' });
-  }
-  if (db.users.has(email.toLowerCase())) {
-    return res.status(409).json({ error: 'Account with this email already exists.' });
-  }
+function isValidAccountType(accountType) {
+    return ['DEMO', 'LIVE'].includes(accountType);
+}
 
-  const passwordHash = await bcrypt.hash(password, 10);
-  const myRefCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+function isValidContractType(contractType) {
+    return [
+        'RISE',
+        'FALL',
+        'EVEN',
+        'ODD',
+        'OVER',
+        'UNDER',
+        'MATCH',
+        'DIFF'
+    ].includes(contractType);
+}
 
-  const user = {
-    id: crypto.randomUUID(),
-    fullName,
-    email: email.toLowerCase(),
-    country: country || 'KE',
-    phone: phone || '+254700000000',
-    passwordHash,
-    demoBalance: 1000.00,
+// ============================================================
+// END OF PART 1
+// More backend sections will follow.
+// ============================================================Balance: 1000.00,
     liveBalance: 0.00,
     referralCode: myRefCode,
     referredBy: referralCode || null,
