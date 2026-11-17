@@ -2279,3 +2279,151 @@ app.get('/api/state', authenticate, async (req, res) => {
 // ============================================================
 // END OF PART 5
 // ============================================================
+// ============================================================
+// PART 6: SERVER STARTUP AND MARKET ENDPOINTS
+// ============================================================
+
+// ------------------------------------------------------------
+// HEALTH CHECK
+// ------------------------------------------------------------
+
+app.get('/api/health', async (req, res) => {
+    try {
+        await query('SELECT 1');
+
+        return res.json({
+            status: 'ONLINE',
+            service: 'GTN Binary Options',
+            database: 'CONNECTED',
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        return res.status(503).json({
+            status: 'DEGRADED',
+            database: 'DISCONNECTED'
+        });
+    }
+});
+
+// ------------------------------------------------------------
+// MARKET INFORMATION
+// ------------------------------------------------------------
+
+app.get('/api/markets', (req, res) => {
+    const marketList = Object.values(markets).map(market => ({
+        symbol: market.symbol,
+        name: market.name,
+        price: Number(market.price.toFixed(2))
+    }));
+
+    res.json({
+        markets: marketList
+    });
+});
+
+// ------------------------------------------------------------
+// INDIVIDUAL MARKET HISTORY
+// ------------------------------------------------------------
+
+app.get('/api/markets/:symbol/history', (req, res) => {
+    const symbol = String(req.params.symbol).toUpperCase();
+
+    if (!markets[symbol]) {
+        return res.status(404).json({
+            error: 'Market not found.'
+        });
+    }
+
+    return res.json({
+        symbol,
+        history: getMarketHistory(symbol)
+    });
+});
+
+// ------------------------------------------------------------
+// GLOBAL ERROR HANDLER
+// ------------------------------------------------------------
+
+app.use((err, req, res, next) => {
+    console.error('Unhandled application error:', err.message);
+
+    if (res.headersSent) {
+        return next(err);
+    }
+
+    return res.status(500).json({
+        error: 'An unexpected server error occurred.'
+    });
+});
+
+// ------------------------------------------------------------
+// GRACEFUL SHUTDOWN
+// ------------------------------------------------------------
+
+let shuttingDown = false;
+
+async function shutdown(signal) {
+    if (shuttingDown) return;
+
+    shuttingDown = true;
+
+    console.log(`${signal} received. Shutting down GTN...`);
+
+    clearInterval(marketInterval);
+    clearInterval(settlementInterval);
+
+    for (const client of wss.clients) {
+        client.close();
+    }
+
+    server.close(async () => {
+        try {
+            await pool.end();
+            console.log('GTN PostgreSQL connection closed.');
+            process.exit(0);
+        } catch (error) {
+            console.error('Shutdown error:', error.message);
+            process.exit(1);
+        }
+    });
+
+    setTimeout(() => {
+        console.error('Forced shutdown after timeout.');
+        process.exit(1);
+    }, 10000).unref();
+}
+
+// ------------------------------------------------------------
+// START SERVER AFTER DATABASE CONNECTION
+// ------------------------------------------------------------
+
+async function startServer() {
+    try {
+        await testConnection();
+
+        server.listen(PORT, () => {
+            console.log('======================================');
+            console.log('GTN BINARY OPTIONS BACKEND');
+            console.log('======================================');
+            console.log(`Server running on port ${PORT}`);
+            console.log('PostgreSQL: CONNECTED');
+            console.log('Synthetic markets: ACTIVE');
+            console.log('WebSocket: ACTIVE');
+            console.log('======================================');
+        });
+
+    } catch (error) {
+        console.error('GTN startup failed:', error.message);
+        process.exit(1);
+    }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+startServer();
+
+// ============================================================
+// END OF PART 6
+// ============================================================
