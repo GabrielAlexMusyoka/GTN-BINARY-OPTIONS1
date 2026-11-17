@@ -1429,3 +1429,563 @@ setInterval(settleExpiredTrades, 1000);
 // ============================================================
 // END OF PART 3
 // ============================================================
+// ============================================================
+// PART 4: PESAPAL DEPOSITS
+// ============================================================
+
+const PESAPAL_ENVIRONMENT =
+    process.env.PESAPAL_ENVIRONMENT || 'sandbox';
+
+const PESAPAL_BASE_URL =
+    PESAPAL_ENVIRONMENT === 'live'
+        ? 'https://pay.pesapal.com/v3'
+        : 'https://cybqa.pesapal.com/pesapalv3';
+
+let pesapalToken = null;
+let pesapalTokenExpiresAt = 0;
+
+// ------------------------------------------------------------
+// PESAPAL CONFIGURATION
+// ------------------------------------------------------------
+
+function validatePesapalConfig() {
+    if (
+        !process.env.PESAPAL_CONSUMER_KEY ||
+        !process.env.PESAPAL_CONSUMER_SECRET ||
+        !process.env.PESAPAL_CALLBACK_URL ||
+        !process.env.PESAPAL_IPN_ID
+    ) {
+        throw new Error('Pesapal configuration is incomplete.');
+    }
+}
+
+// ------------------------------------------------------------
+// PESAPAL AUTHENTICATION
+// ------------------------------------------------------------
+
+async function getPesapalToken() {
+    validatePesapalConfig();
+
+    if (
+        pesapalToken &&
+        Date.now() < pesapalTokenExpiresAt
+    ) {
+        return pesapalToken;
+    }
+
+    const response = await fetch(
+        `${PESAPAL_BASE_URL}/api/Auth/RequestToken`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                consumer_key: process.env.PESAPAL_CONSUMER_KEY,
+                consumer_secret: process.env.PESAPAL_CONSUMER_SECRET
+            })
+        }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok || !data.token) {
+        throw new Error(
+            data.message || 'Pesapal authentication failed.'
+        );
+    }
+
+    pesapalToken = data.token;
+
+    // Refresh before Pesapal's maximum five-minute token lifetime.
+    pesapalTokenExpiresAt = Date.now() + (4 * 60 * 1000);
+
+    return pesapalToken;
+}
+
+// ------------------------------------------------------------
+// PESAPAL API REQUEST
+// ------------------------------------------------------------
+
+async function pesapalRequest(path, options = {}) {
+    const token = await getPesapalToken();
+
+    const response = await fetch(
+        `${PESAPAL_BASE_URL}${path}`,
+        {
+            ...options,
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                ...(options.headers || {})
+            }
+        }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+        throw new Error(
+            data.message || 'Pesapal request failed.'
+        );
+    }
+
+    return data;
+}
+
+// ------------------------------------------------------------
+// VERIFY PAYMENT WITH PESAPAL
+// ------------------------------------------------------------
+
+async function getPesapalPaymentStatus(trackingId) {
+    const data = await pesapalRequest(
+        `/api/Transactions/GetTransactionStatus?orderTrackingId=${encodeURIComponent(trackingId)}`,
+        { method: 'GET' }
+    );
+
+    return data;
+}
+
+// ------------------------------------------------------------
+// CREDIT A VERIFIED DEPOSIT
+// ------------------------------------------------------------
+
+async function creditVerifiedDeposit(trackingId) {
+    return withTransaction(async (client) => {
+        const depositResult = await client.query(
+            `SELECT *
+             FROM deposits
+             WHERE pesapal_tracking_id = $1
+             FOR UPDATE`,
+            [trackingId]
+        );
+
+        if (!depositResult.rows.length) {
+            throw new Error('DEPOSIT_NOT_FOUND');
+        }
+
+        const deposit = depositResult.rows[0];
+
+        if (deposit.status === 'COMPLETED') {
+            return {
+                alreadyCredited: true,
+                deposit
+            };
+        }
+
+        const walletResult = await client.query(
+            `SELECT *
+             FROM wallets
+             WHERE user_id = $1
+               AND account_type = 'LIVE'
+             FOR UPDATE`,
+            [deposit.user_id]
+        );
+
+        if (!walletResult.rows.length) {
+            throw new Error('LIVE_WALLET_NOT_FOUND');
+        }
+
+        const wallet = walletResult.rows[0];
+
+        const usdAmount = toNumber(deposit.usd_amount);
+
+        const newBalance = roundMoney(
+            toNumber(wallet.balance) + usdAmount
+        );
+
+        await client.query(
+            `UPDATE wallets
+             SET balance = $1,
+                 updated_at = NOW()
+             WHERE id = $2`,
+            [newBalance, wallet.id]
+        );
+
+        await recordLedger(client, {
+            userId: deposit.user_id,
+            walletId: wallet.id,
+            accountType: 'LIVE',
+            entryType: 'DEPOSIT',
+            amount: usdAmount,
+            balanceAfter: newBalance,
+            idempotencyKey: `PESAPAL_DEPOSIT_${deposit.id}`,
+            description: 'Verified Pesapal M-Pesa deposit'
+        });
+
+        await client.query(
+            `UPDATE deposits
+             SET status = 'COMPLETED',
+                 provider_status = 'COMPLETED',
+                 credited_at = NOW()
+             WHERE id = $1`,
+            [deposit.id]
+        );
+
+        await client.query(
+            `UPDATE transactions
+             SET status = 'COMPLETED'
+             WHERE reference = $1`,
+            [deposit.reference]
+        );
+
+        return {
+            alreadyCredited: false,
+            balance: newBalance,
+            deposit
+        };
+    });
+}
+
+// ------------------------------------------------------------
+// CREATE DEPOSIT CHECKOUT
+// ------------------------------------------------------------
+
+app.post('/api/cashier/deposit', authenticate, async (req, res) => {
+    let reference;
+
+    try {
+        const user = req.user;
+
+        const amount = roundMoney(Number(req.body.amount));
+
+        const phone = normalizePhone(
+            req.body.phone || user.phone
+        );
+
+        const method = String(
+            req.body.method || 'MPESA'
+        ).toUpperCase();
+
+        if (method !== 'MPESA') {
+            return res.status(400).json({
+                error: 'Only M-Pesa deposits are supported.'
+            });
+        }
+
+        if (user.country !== 'KE') {
+            return res.status(400).json({
+                error: 'M-Pesa deposits are currently available for Kenyan accounts only.'
+            });
+        }
+
+        if (
+            !Number.isFinite(amount) ||
+            amount < PLATFORM_RULES.MIN_DEPOSIT_USD
+        ) {
+            return res.status(400).json({
+                error: `Minimum deposit is $${PLATFORM_RULES.MIN_DEPOSIT_USD}.`
+            });
+        }
+
+        if (!phone) {
+            return res.status(400).json({
+                error: 'Enter a valid Kenyan M-Pesa phone number.'
+            });
+        }
+
+        validatePesapalConfig();
+
+        const kesAmount = roundMoney(
+            amount * KES_PER_USD
+        );
+
+        reference = generateReference('GTNDEP');
+
+        // Save the pending deposit before requesting checkout.
+        await withTransaction(async (client) => {
+            await client.query(
+                `INSERT INTO deposits (
+                    user_id,
+                    reference,
+                    usd_amount,
+                    kes_amount,
+                    exchange_rate,
+                    phone,
+                    status,
+                    provider_status
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', 'PENDING')`,
+                [
+                    user.id,
+                    reference,
+                    amount,
+                    kesAmount,
+                    KES_PER_USD,
+                    phone
+                ]
+            );
+
+            await client.query(
+                `INSERT INTO transactions (
+                    user_id,
+                    reference,
+                    type,
+                    amount,
+                    currency,
+                    status,
+                    provider,
+                    provider_reference,
+                    description
+                )
+                VALUES (
+                    $1, $2, 'DEPOSIT', $3, 'USD',
+                    'PENDING', 'PESAPAL', $2,
+                    'Pending M-Pesa deposit'
+                )`,
+                [user.id, reference, amount]
+            );
+        });
+
+        const checkout = await pesapalRequest(
+            '/api/Transactions/SubmitOrderRequest',
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    id: reference,
+                    currency: 'KES',
+                    amount: kesAmount,
+                    description: 'GTN LIVE wallet deposit',
+                    callback_url: process.env.PESAPAL_CALLBACK_URL,
+                    notification_id: process.env.PESAPAL_IPN_ID,
+                    billing_address: {
+                        email_address: user.email,
+                        phone_number: phone,
+                        country_code: 'KE',
+                        first_name: user.full_name.split(' ')[0] || 'GTN',
+                        last_name: user.full_name.split(' ').slice(1).join(' ') || 'Customer'
+                    }
+                })
+            }
+        );
+
+        if (!checkout.order_tracking_id || !checkout.redirect_url) {
+            throw new Error('Pesapal did not return a valid checkout URL.');
+        }
+
+        await query(
+            `UPDATE deposits
+             SET pesapal_tracking_id = $1,
+                 pesapal_merchant_reference = $2
+             WHERE reference = $3`,
+            [
+                checkout.order_tracking_id,
+                checkout.merchant_reference || reference,
+                reference
+            ]
+        );
+
+        return res.status(201).json({
+            message: 'Deposit checkout created.',
+            reference,
+            amount,
+            kesAmount,
+            currency: 'KES',
+            status: 'PENDING',
+            checkoutUrl: checkout.redirect_url
+        });
+
+    } catch (error) {
+        console.error('Deposit creation error:', error.message);
+
+        if (reference) {
+            await query(
+                `UPDATE deposits
+                 SET status = 'FAILED',
+                     provider_status = 'SUBMISSION_FAILED'
+                 WHERE reference = $1
+                   AND pesapal_tracking_id IS NULL`,
+                [reference]
+            ).catch(() => {});
+
+            await query(
+                `UPDATE transactions
+                 SET status = 'FAILED'
+                 WHERE reference = $1`,
+                [reference]
+            ).catch(() => {});
+        }
+
+        return res.status(502).json({
+            error: 'Could not start the deposit. Please try again.'
+        });
+    }
+});
+
+// ------------------------------------------------------------
+// CHECK DEPOSIT STATUS
+// ------------------------------------------------------------
+
+app.get(
+    '/api/cashier/status/:reference',
+    authenticate,
+    async (req, res) => {
+        try {
+            const result = await query(
+                `SELECT *
+                 FROM deposits
+                 WHERE reference = $1
+                   AND user_id = $2
+                 LIMIT 1`,
+                [req.params.reference, req.user.id]
+            );
+
+            if (!result.rows.length) {
+                return res.status(404).json({
+                    error: 'Deposit not found.'
+                });
+            }
+
+            const deposit = result.rows[0];
+
+            if (
+                deposit.status !== 'COMPLETED' &&
+                deposit.pesapal_tracking_id
+            ) {
+                const status = await getPesapalPaymentStatus(
+                    deposit.pesapal_tracking_id
+                );
+
+                const statusCode = Number(status.status_code);
+                const description = String(
+                    status.payment_status_description || ''
+                ).toUpperCase();
+
+                if (statusCode === 1 || description === 'COMPLETED') {
+                    const paidKes = Number(status.amount);
+
+                    if (
+                        !Number.isFinite(paidKes) ||
+                        roundMoney(paidKes) !== roundMoney(deposit.kes_amount)
+                    ) {
+                        throw new Error('PAYMENT_AMOUNT_MISMATCH');
+                    }
+
+                    await creditVerifiedDeposit(
+                        deposit.pesapal_tracking_id
+                    );
+
+                } else if (statusCode === 2) {
+                    await withTransaction(async (client) => {
+                        await client.query(
+                            `UPDATE deposits
+                             SET status = 'FAILED',
+                                 provider_status = 'FAILED'
+                             WHERE id = $1
+                               AND status = 'PENDING'`,
+                            [deposit.id]
+                        );
+
+                        await client.query(
+                            `UPDATE transactions
+                             SET status = 'FAILED'
+                             WHERE reference = $1
+                               AND status = 'PENDING'`,
+                            [deposit.reference]
+                        );
+                    });
+                } else if (statusCode === 3) {
+                    await query(
+                        `UPDATE deposits
+                         SET provider_status = 'REVERSED'
+                         WHERE id = $1`,
+                        [deposit.id]
+                    );
+                }
+            }
+
+            const refreshed = await query(
+                `SELECT reference, usd_amount, kes_amount, status
+                 FROM deposits
+                 WHERE id = $1`,
+                [deposit.id]
+            );
+
+            return res.json({
+                deposit: refreshed.rows[0]
+            });
+
+        } catch (error) {
+            console.error('Deposit status error:', error.message);
+
+            return res.status(502).json({
+                error: 'Could not verify payment status.'
+            });
+        }
+    }
+);
+
+// ------------------------------------------------------------
+// PESAPAL IPN NOTIFICATION
+// ------------------------------------------------------------
+
+async function handlePesapalNotification(req, res) {
+    try {
+        const trackingId =
+            req.query.OrderTrackingId ||
+            req.body.OrderTrackingId;
+
+        if (!trackingId) {
+            return res.status(400).json({
+                error: 'Missing Pesapal tracking ID.'
+            });
+        }
+
+        const status = await getPesapalPaymentStatus(trackingId);
+
+        const statusCode = Number(status.status_code);
+        const description = String(
+            status.payment_status_description || ''
+        ).toUpperCase();
+
+        if (statusCode === 1 || description === 'COMPLETED') {
+            const depositResult = await query(
+                `SELECT *
+                 FROM deposits
+                 WHERE pesapal_tracking_id = $1`,
+                [trackingId]
+            );
+
+            if (depositResult.rows.length) {
+                const deposit = depositResult.rows[0];
+                const paidKes = Number(status.amount);
+
+                if (
+                    Number.isFinite(paidKes) &&
+                    roundMoney(paidKes) === roundMoney(deposit.kes_amount)
+                ) {
+                    await creditVerifiedDeposit(trackingId);
+                }
+            }
+        }
+
+        return res.status(200).json({
+            orderNotificationType:
+                req.query.OrderNotificationType ||
+                req.body.OrderNotificationType ||
+                'IPNCHANGE',
+            orderTrackingId: trackingId,
+            orderMerchantReference:
+                req.query.OrderMerchantReference ||
+                req.body.OrderMerchantReference ||
+                '',
+            status: 200
+        });
+
+    } catch (error) {
+        console.error('Pesapal IPN error:', error.message);
+
+        return res.status(500).json({
+            error: 'Could not process payment notification.'
+        });
+    }
+}
+
+app.get('/api/payments/pesapal/ipn', handlePesapalNotification);
+app.post('/api/payments/pesapal/ipn', handlePesapalNotification);
+
+// ============================================================
+// END OF PART 4
+// ============================================================
