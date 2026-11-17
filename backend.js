@@ -667,3 +667,286 @@ app.get('/api/state', authenticate, (req, res) => {
 server.listen(PORT, () => {
   console.log(`GTN Binary Options Backend running on http://localhost:${PORT}`);
 });
+// ============================================================
+// PART 2: CUSTOMER REGISTRATION AND LOGIN
+// ============================================================
+
+// ------------------------------------------------------------
+// CUSTOMER REGISTRATION
+// ------------------------------------------------------------
+
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const {
+            name,
+            fullName,
+            email,
+            password,
+            country = 'KE',
+            phone = ''
+        } = req.body;
+
+        const customerName = String(fullName || name || '').trim();
+        const customerEmail = String(email || '').trim().toLowerCase();
+
+        if (!customerName || !customerEmail || !password) {
+            return res.status(400).json({
+                error: 'Name, email and password are required.'
+            });
+        }
+
+        if (customerName.length < 2 || customerName.length > 100) {
+            return res.status(400).json({
+                error: 'Name must be between 2 and 100 characters.'
+            });
+        }
+
+        const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        if (!emailPattern.test(customerEmail)) {
+            return res.status(400).json({
+                error: 'Enter a valid email address.'
+            });
+        }
+
+        if (String(password).length < 8) {
+            return res.status(400).json({
+                error: 'Password must contain at least 8 characters.'
+            });
+        }
+
+        if (String(password).length > 128) {
+            return res.status(400).json({
+                error: 'Password is too long.'
+            });
+        }
+
+        if (country !== 'KE') {
+            return res.status(400).json({
+                error: 'Registration is currently available for Kenya only.'
+            });
+        }
+
+        const normalizedPhone = phone ? normalizePhone(phone) : null;
+
+        if (phone && !normalizedPhone) {
+            return res.status(400).json({
+                error: 'Enter a valid Kenyan phone number.'
+            });
+        }
+
+        const existingUser = await query(
+            'SELECT id FROM users WHERE email = $1 LIMIT 1',
+            [customerEmail]
+        );
+
+        if (existingUser.rows.length) {
+            return res.status(409).json({
+                error: 'An account with this email already exists.'
+            });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 12);
+
+        const result = await withTransaction(async (client) => {
+            let user;
+
+            // Generate a referral code and retry if a collision occurs.
+            for (let attempt = 0; attempt < 5; attempt++) {
+                const referralCode = generateReferralCode();
+
+                try {
+                    const insertedUser = await client.query(
+                        `INSERT INTO users (
+                            full_name,
+                            email,
+                            password_hash,
+                            country,
+                            phone,
+                            referral_code,
+                            kyc_status,
+                            two_factor_enabled,
+                            account_status
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6,
+                                'not_submitted', FALSE, 'ACTIVE')
+                        RETURNING *`,
+                        [
+                            customerName,
+                            customerEmail,
+                            passwordHash,
+                            country,
+                            normalizedPhone,
+                            referralCode
+                        ]
+                    );
+
+                    user = insertedUser.rows[0];
+                    break;
+                } catch (error) {
+                    if (error.code === '23505' &&
+                        error.constraint &&
+                        error.constraint.includes('referral')) {
+                        continue;
+                    }
+
+                    throw error;
+                }
+            }
+
+            if (!user) {
+                throw new Error('Could not generate a unique referral code.');
+            }
+
+            // Create DEMO wallet.
+            const demoWallet = await client.query(
+                `INSERT INTO wallets (
+                    user_id,
+                    account_type,
+                    balance,
+                    reserved_balance,
+                    currency
+                )
+                VALUES ($1, 'DEMO', 1000.00, 0.00, 'USD')
+                RETURNING *`,
+                [user.id]
+            );
+
+            // Create LIVE wallet.
+            await client.query(
+                `INSERT INTO wallets (
+                    user_id,
+                    account_type,
+                    balance,
+                    reserved_balance,
+                    currency
+                )
+                VALUES ($1, 'LIVE', 0.00, 0.00, 'USD')`,
+                [user.id]
+            );
+
+            // Record the initial demo wallet credit.
+            await client.query(
+                `INSERT INTO wallet_ledger (
+                    user_id,
+                    wallet_id,
+                    account_type,
+                    entry_type,
+                    amount,
+                    balance_after,
+                    idempotency_key,
+                    description
+                )
+                VALUES (
+                    $1, $2, 'DEMO', 'INITIAL_DEMO',
+                    1000.00, 1000.00, $3,
+                    'Initial demo wallet funding'
+                )`,
+                [
+                    user.id,
+                    demoWallet.rows[0].id,
+                    `INITIAL_DEMO_${user.id}`
+                ]
+            );
+
+            return user;
+        });
+
+        const token = createToken(result);
+        const safeUser = await formatUser(result);
+
+        return res.status(201).json({
+            message: 'Account created successfully.',
+            token,
+            user: safeUser,
+            rules: PLATFORM_RULES
+        });
+
+    } catch (error) {
+        console.error('Registration error:', error.message);
+
+        if (error.code === '23505') {
+            return res.status(409).json({
+                error: 'An account with these details already exists.'
+            });
+        }
+
+        return res.status(500).json({
+            error: 'Could not create your account.'
+        });
+    }
+});
+
+// ------------------------------------------------------------
+// CUSTOMER LOGIN
+// ------------------------------------------------------------
+
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const email = String(req.body.email || '')
+            .trim()
+            .toLowerCase();
+
+        const password = req.body.password;
+
+        if (!email || !password) {
+            return res.status(400).json({
+                error: 'Email and password are required.'
+            });
+        }
+
+        const result = await query(
+            `SELECT *
+             FROM users
+             WHERE email = $1
+             LIMIT 1`,
+            [email]
+        );
+
+        if (!result.rows.length) {
+            return res.status(401).json({
+                error: 'Invalid email or password.'
+            });
+        }
+
+        const user = result.rows[0];
+
+        const passwordMatches = await bcrypt.compare(
+            password,
+            user.password_hash
+        );
+
+        if (!passwordMatches) {
+            return res.status(401).json({
+                error: 'Invalid email or password.'
+            });
+        }
+
+        if (user.account_status !== 'ACTIVE') {
+            return res.status(403).json({
+                error: 'Your account is suspended. Contact support.'
+            });
+        }
+
+        const token = createToken(user);
+        const safeUser = await formatUser(user);
+
+        return res.json({
+            message: 'Login successful.',
+            token,
+            user: safeUser,
+            rules: PLATFORM_RULES
+        });
+
+    } catch (error) {
+        console.error('Login error:', error.message);
+
+        return res.status(500).json({
+            error: 'Could not log in. Please try again.'
+        });
+    }
+});
+
+// ============================================================
+// END OF PART 2
+// ============================================================
