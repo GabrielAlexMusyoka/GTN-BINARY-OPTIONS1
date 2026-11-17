@@ -1989,3 +1989,293 @@ app.post('/api/payments/pesapal/ipn', handlePesapalNotification);
 // ============================================================
 // END OF PART 4
 // ============================================================
+// ============================================================
+// PART 5: WITHDRAWALS, ACCOUNT PROFILE AND CUSTOMER STATE
+// ============================================================
+
+// ------------------------------------------------------------
+// CUSTOMER WITHDRAWAL REQUEST
+// ------------------------------------------------------------
+
+app.post('/api/cashier/withdraw', authenticate, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const amount = roundMoney(Number(req.body.amount));
+        const phone = normalizePhone(
+            req.body.phone || req.user.phone
+        );
+
+        if (
+            !Number.isFinite(amount) ||
+            amount < PLATFORM_RULES.MIN_WITHDRAW_USD
+        ) {
+            return res.status(400).json({
+                error: `Minimum withdrawal is $${PLATFORM_RULES.MIN_WITHDRAW_USD}.`
+            });
+        }
+
+        if (!phone) {
+            return res.status(400).json({
+                error: 'Enter a valid Kenyan M-Pesa phone number.'
+            });
+        }
+
+        const kesAmount = roundMoney(amount * KES_PER_USD);
+        const reference = generateReference('GTNWTH');
+
+        const withdrawal = await withTransaction(async (client) => {
+            const wallet = await getWallet(
+                client,
+                userId,
+                'LIVE',
+                true
+            );
+
+            const balance = toNumber(wallet.balance);
+            const reserved = toNumber(wallet.reserved_balance);
+
+            const available = roundMoney(balance - reserved);
+
+            if (available < amount) {
+                throw new Error('INSUFFICIENT_FUNDS');
+            }
+
+            const newReserved = roundMoney(reserved + amount);
+
+            await client.query(
+                `UPDATE wallets
+                 SET reserved_balance = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [newReserved, wallet.id]
+            );
+
+            const inserted = await client.query(
+                `INSERT INTO withdrawals (
+                    user_id,
+                    wallet_id,
+                    reference,
+                    amount,
+                    kes_amount,
+                    exchange_rate,
+                    phone,
+                    status
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, 'PENDING'
+                )
+                RETURNING *`,
+                [
+                    userId,
+                    wallet.id,
+                    reference,
+                    amount,
+                    kesAmount,
+                    KES_PER_USD,
+                    phone
+                ]
+            );
+
+            await recordLedger(client, {
+                userId,
+                walletId: wallet.id,
+                accountType: 'LIVE',
+                entryType: 'WITHDRAWAL_RESERVE',
+                amount: 0,
+                balanceAfter: balance,
+                idempotencyKey: `WITHDRAWAL_RESERVE_${inserted.rows[0].id}`,
+                description: 'Funds reserved for withdrawal request'
+            });
+
+            await client.query(
+                `INSERT INTO transactions (
+                    user_id,
+                    reference,
+                    type,
+                    amount,
+                    currency,
+                    status,
+                    provider,
+                    provider_reference,
+                    description
+                )
+                VALUES (
+                    $1, $2, 'WITHDRAWAL', $3, 'USD',
+                    'PENDING', 'MANUAL_MPESA', $2,
+                    'Pending manual M-Pesa withdrawal'
+                )`,
+                [userId, reference, amount]
+            );
+
+            return inserted.rows[0];
+        });
+
+        return res.status(201).json({
+            message: 'Withdrawal request submitted for review.',
+            withdrawal: {
+                id: withdrawal.id,
+                reference: withdrawal.reference,
+                amount: toNumber(withdrawal.amount),
+                kesAmount: toNumber(withdrawal.kes_amount),
+                phone: withdrawal.phone,
+                status: withdrawal.status,
+                timestamp: withdrawal.created_at
+            },
+            liveBalance: await getLiveBalance(userId)
+        });
+
+    } catch (error) {
+        if (error.message === 'INSUFFICIENT_FUNDS') {
+            return res.status(400).json({
+                error: 'Insufficient available LIVE wallet balance.'
+            });
+        }
+
+        console.error('Withdrawal error:', error.message);
+
+        return res.status(500).json({
+            error: 'Could not submit withdrawal request.'
+        });
+    }
+});
+
+// ------------------------------------------------------------
+// GET LIVE WALLET BALANCE
+// ------------------------------------------------------------
+
+async function getLiveBalance(userId) {
+    const result = await query(
+        `SELECT balance
+         FROM wallets
+         WHERE user_id = $1
+           AND account_type = 'LIVE'
+         LIMIT 1`,
+        [userId]
+    );
+
+    return result.rows.length
+        ? toNumber(result.rows[0].balance)
+        : 0;
+}
+
+// ------------------------------------------------------------
+// ACCOUNT PROFILE AND KYC
+// ------------------------------------------------------------
+
+app.post('/api/account/kyc', authenticate, async (req, res) => {
+    try {
+        const result = await query(
+            `UPDATE users
+             SET kyc_status = 'pending_review',
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING kyc_status`,
+            [req.user.id]
+        );
+
+        return res.json({
+            message: 'KYC submitted for review.',
+            kycStatus: result.rows[0].kyc_status
+        });
+
+    } catch (error) {
+        console.error('KYC update error:', error.message);
+
+        return res.status(500).json({
+            error: 'Could not update KYC status.'
+        });
+    }
+});
+
+// ------------------------------------------------------------
+// CUSTOMER STATE
+// ------------------------------------------------------------
+
+app.get('/api/state', authenticate, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const userResult = await query(
+            `SELECT *
+             FROM users
+             WHERE id = $1
+             LIMIT 1`,
+            [userId]
+        );
+
+        const user = await formatUser(userResult.rows[0]);
+
+        const tradesResult = await query(
+            `SELECT *
+             FROM trades
+             WHERE user_id = $1
+             ORDER BY opened_at DESC
+             LIMIT 50`,
+            [userId]
+        );
+
+        const transactionsResult = await query(
+            `SELECT *
+             FROM transactions
+             WHERE user_id = $1
+             ORDER BY created_at DESC
+             LIMIT 30`,
+            [userId]
+        );
+
+        const trades = tradesResult.rows.map((trade) => ({
+            id: trade.id,
+            symbol: trade.symbol,
+            contractType: trade.contract_type,
+            accountType: trade.account_type,
+            stake: toNumber(trade.stake),
+            entryPrice: toNumber(trade.entry_price),
+            exitPrice: trade.exit_price === null
+                ? null
+                : toNumber(trade.exit_price),
+            barrier: trade.barrier,
+            duration: trade.duration_seconds,
+            status: trade.status,
+            result: trade.result,
+            profit: toNumber(trade.profit),
+            payout: toNumber(trade.payout),
+            openedAt: trade.opened_at,
+            closedAt: trade.closed_at,
+            expiresAt: trade.expires_at
+        }));
+
+        const transactions = transactionsResult.rows.map((tx) => ({
+            id: tx.id,
+            reference: tx.reference,
+            type: tx.type,
+            accountType: tx.account_type || 'LIVE',
+            method: tx.provider === 'MANUAL_MPESA' ||
+                    tx.provider === 'PESAPAL'
+                ? 'MPESA'
+                : tx.provider,
+            amount: toNumber(tx.amount),
+            currency: tx.currency,
+            status: tx.status,
+            timestamp: tx.created_at
+        }));
+
+        return res.json({
+            user,
+            trades,
+            transactions,
+            rules: PLATFORM_RULES
+        });
+
+    } catch (error) {
+        console.error('Customer state error:', error.message);
+
+        return res.status(500).json({
+            error: 'Could not load account information.'
+        });
+    }
+});
+
+// ============================================================
+// END OF PART 5
+// ============================================================
