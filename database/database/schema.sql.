@@ -1,107 +1,507 @@
+-- =====================================================
+-- GTN PLATFORM DATABASE
+-- PostgreSQL
+-- =====================================================
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TABLE users (
+-- =====================================================
+-- 1. USERS
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
     full_name VARCHAR(150) NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    country VARCHAR(10) DEFAULT 'KE',
+    email VARCHAR(255) NOT NULL UNIQUE,
+    country VARCHAR(5) NOT NULL DEFAULT 'KE',
     phone VARCHAR(30),
+
     password_hash TEXT NOT NULL,
+
     referral_code VARCHAR(30) UNIQUE NOT NULL,
     referred_by VARCHAR(30),
-    referrals_count INTEGER DEFAULT 0,
-    referral_earnings NUMERIC(18,2) DEFAULT 0,
-    kyc_status VARCHAR(30) DEFAULT 'unverified',
-    two_factor_enabled BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+
+    referrals_count INTEGER NOT NULL DEFAULT 0,
+    referral_earnings NUMERIC(18,2) NOT NULL DEFAULT 0,
+
+    kyc_status VARCHAR(30) NOT NULL DEFAULT 'unverified',
+    two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT users_referrals_check
+        CHECK (referrals_count >= 0),
+
+    CONSTRAINT users_referral_earnings_check
+        CHECK (referral_earnings >= 0),
+
+    CONSTRAINT users_kyc_check
+        CHECK (
+            kyc_status IN (
+                'unverified',
+                'pending_review',
+                'verified',
+                'rejected'
+            )
+        )
 );
 
-CREATE TABLE wallets (
+CREATE INDEX IF NOT EXISTS idx_users_email
+ON users(email);
+
+CREATE INDEX IF NOT EXISTS idx_users_referral_code
+ON users(referral_code);
+
+
+-- =====================================================
+-- 2. WALLETS
+-- One DEMO and one LIVE wallet per user
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS wallets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id),
-    account_type VARCHAR(10) NOT NULL
-        CHECK (account_type IN ('DEMO','LIVE')),
-    currency VARCHAR(3) DEFAULT 'USD',
+
+    user_id UUID NOT NULL REFERENCES users(id)
+        ON DELETE RESTRICT,
+
+    account_type VARCHAR(10) NOT NULL,
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+
     balance NUMERIC(18,2) NOT NULL DEFAULT 0,
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(user_id, account_type)
+    reserved_balance NUMERIC(18,2) NOT NULL DEFAULT 0,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT wallets_account_type_check
+        CHECK (account_type IN ('DEMO', 'LIVE')),
+
+    CONSTRAINT wallets_currency_check
+        CHECK (currency = 'USD'),
+
+    CONSTRAINT wallets_balance_check
+        CHECK (balance >= 0),
+
+    CONSTRAINT wallets_reserved_check
+        CHECK (reserved_balance >= 0),
+
+    UNIQUE (user_id, account_type)
 );
 
-CREATE TABLE transactions (
+CREATE INDEX IF NOT EXISTS idx_wallets_user
+ON wallets(user_id);
+
+
+-- =====================================================
+-- 3. GENERAL TRANSACTIONS
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id),
-    reference VARCHAR(100) UNIQUE NOT NULL,
-    type VARCHAR(20) NOT NULL,
+
+    user_id UUID NOT NULL REFERENCES users(id)
+        ON DELETE RESTRICT,
+
+    wallet_id UUID REFERENCES wallets(id),
+
+    reference VARCHAR(100) NOT NULL UNIQUE,
+
+    type VARCHAR(30) NOT NULL,
     amount NUMERIC(18,2) NOT NULL,
-    currency VARCHAR(3) NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+
     description TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+
+    provider VARCHAR(30),
+    provider_reference VARCHAR(150),
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT transactions_type_check
+        CHECK (
+            type IN (
+                'DEPOSIT',
+                'WITHDRAWAL',
+                'TRADE',
+                'TRADE_WIN',
+                'TRADE_LOSS',
+                'REFERRAL',
+                'ADJUSTMENT'
+            )
+        ),
+
+    CONSTRAINT transactions_amount_check
+        CHECK (amount > 0),
+
+    CONSTRAINT transactions_status_check
+        CHECK (
+            status IN (
+                'PENDING',
+                'PROCESSING',
+                'COMPLETED',
+                'FAILED',
+                'REJECTED',
+                'CANCELLED'
+            )
+        )
 );
 
-CREATE TABLE deposits (
+CREATE INDEX IF NOT EXISTS idx_transactions_user
+ON transactions(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_reference
+ON transactions(reference);
+
+
+-- =====================================================
+-- 4. DEPOSITS
+-- Pesapal M-Pesa integration
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS deposits (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id),
-    reference VARCHAR(100) UNIQUE NOT NULL,
-    pesapal_tracking_id VARCHAR(150) UNIQUE,
+
+    user_id UUID NOT NULL REFERENCES users(id)
+        ON DELETE RESTRICT,
+
+    wallet_id UUID NOT NULL REFERENCES wallets(id),
+
+    transaction_id UUID REFERENCES transactions(id),
+
+    reference VARCHAR(100) NOT NULL UNIQUE,
+
+    pesapal_tracking_id VARCHAR(200) UNIQUE,
+    pesapal_merchant_reference VARCHAR(200),
+
     usd_amount NUMERIC(18,2) NOT NULL,
     kes_amount NUMERIC(18,2) NOT NULL,
     exchange_rate NUMERIC(18,6) NOT NULL,
+
     phone VARCHAR(30) NOT NULL,
-    status VARCHAR(20) DEFAULT 'PENDING',
+
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+
+    provider_status TEXT,
+
     credited_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT deposits_amount_check
+        CHECK (
+            usd_amount >= 5
+            AND kes_amount > 0
+            AND exchange_rate > 0
+        ),
+
+    CONSTRAINT deposits_status_check
+        CHECK (
+            status IN (
+                'PENDING',
+                'PROCESSING',
+                'COMPLETED',
+                'FAILED',
+                'CANCELLED'
+            )
+        )
 );
 
-CREATE TABLE withdrawals (
+CREATE INDEX IF NOT EXISTS idx_deposits_user
+ON deposits(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_deposits_status
+ON deposits(status);
+
+CREATE INDEX IF NOT EXISTS idx_deposits_tracking
+ON deposits(pesapal_tracking_id);
+
+
+-- =====================================================
+-- 5. WITHDRAWALS
+-- Manual admin approval
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS withdrawals (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id),
-    reference VARCHAR(100) UNIQUE NOT NULL,
+
+    user_id UUID NOT NULL REFERENCES users(id)
+        ON DELETE RESTRICT,
+
+    wallet_id UUID NOT NULL REFERENCES wallets(id),
+
+    transaction_id UUID REFERENCES transactions(id),
+
+    reference VARCHAR(100) NOT NULL UNIQUE,
+
     amount NUMERIC(18,2) NOT NULL,
     kes_amount NUMERIC(18,2) NOT NULL,
+
+    exchange_rate NUMERIC(18,6) NOT NULL,
+
     phone VARCHAR(30) NOT NULL,
-    status VARCHAR(20) DEFAULT 'PENDING',
+
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+
     admin_note TEXT,
+    reviewed_by UUID REFERENCES users(id),
     reviewed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+
+    paid_at TIMESTAMPTZ,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT withdrawals_amount_check
+        CHECK (
+            amount >= 10
+            AND kes_amount > 0
+            AND exchange_rate > 0
+        ),
+
+    CONSTRAINT withdrawals_status_check
+        CHECK (
+            status IN (
+                'PENDING',
+                'APPROVED',
+                'REJECTED',
+                'PROCESSING',
+                'PAID',
+                'FAILED',
+                'CANCELLED'
+            )
+        )
 );
 
-CREATE TABLE trades (
+CREATE INDEX IF NOT EXISTS idx_withdrawals_user
+ON withdrawals(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_withdrawals_status
+ON withdrawals(status);
+
+
+-- =====================================================
+-- 6. TRADES
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS trades (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id),
+
+    user_id UUID NOT NULL REFERENCES users(id)
+        ON DELETE RESTRICT,
+
+    wallet_id UUID NOT NULL REFERENCES wallets(id),
+
     symbol VARCHAR(50) NOT NULL,
+
     account_type VARCHAR(10) NOT NULL,
+
     contract_type VARCHAR(20) NOT NULL,
+
     stake NUMERIC(18,2) NOT NULL,
-    entry_price NUMERIC(24,8),
-    exit_price NUMERIC(24,8),
-    barrier NUMERIC(18,2),
-    payout_rate NUMERIC(8,4),
-    profit NUMERIC(18,2) DEFAULT 0,
-    status VARCHAR(20) DEFAULT 'OPEN',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    expires_at TIMESTAMPTZ
+
+    entry_price NUMERIC(20,8) NOT NULL,
+    exit_price NUMERIC(20,8),
+
+    entry_digit SMALLINT,
+    exit_digit SMALLINT,
+
+    barrier SMALLINT,
+
+    payout_rate NUMERIC(8,4) NOT NULL DEFAULT 0.80,
+
+    profit NUMERIC(18,2) NOT NULL DEFAULT 0,
+
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    settled_at TIMESTAMPTZ,
+
+    CONSTRAINT trades_account_type_check
+        CHECK (account_type IN ('DEMO', 'LIVE')),
+
+    CONSTRAINT trades_contract_check
+        CHECK (
+            contract_type IN (
+                'RISE',
+                'FALL',
+                'EVEN',
+                'ODD',
+                'OVER',
+                'UNDER',
+                'MATCH',
+                'DIFF'
+            )
+        ),
+
+    CONSTRAINT trades_stake_check
+        CHECK (stake >= 5),
+
+    CONSTRAINT trades_payout_check
+        CHECK (payout_rate >= 0 AND payout_rate <= 1),
+
+    CONSTRAINT trades_status_check
+        CHECK (
+            status IN (
+                'OPEN',
+                'WON',
+                'LOST',
+                'CANCELLED'
+            )
+        )
 );
 
-CREATE TABLE admins (
+CREATE INDEX IF NOT EXISTS idx_trades_user
+ON trades(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_trades_status
+ON trades(status);
+
+CREATE INDEX IF NOT EXISTS idx_trades_expiry
+ON trades(status, expires_at);
+
+
+-- =====================================================
+-- 7. WALLET LEDGER
+-- Records every wallet balance movement.
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS wallet_ledger (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) UNIQUE NOT NULL,
+
+    wallet_id UUID NOT NULL REFERENCES wallets(id)
+        ON DELETE RESTRICT,
+
+    user_id UUID NOT NULL REFERENCES users(id)
+        ON DELETE RESTRICT,
+
+    entry_type VARCHAR(40) NOT NULL,
+
+    reference VARCHAR(120) NOT NULL,
+
+    idempotency_key VARCHAR(180) NOT NULL UNIQUE,
+
+    amount NUMERIC(18,2) NOT NULL DEFAULT 0,
+
+    balance_before NUMERIC(18,2) NOT NULL,
+    balance_after NUMERIC(18,2) NOT NULL,
+
+    reserved_before NUMERIC(18,2) NOT NULL DEFAULT 0,
+    reserved_after NUMERIC(18,2) NOT NULL DEFAULT 0,
+
+    description TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT ledger_entry_type_check
+        CHECK (
+            entry_type IN (
+                'INITIAL_DEMO',
+                'DEPOSIT',
+                'TRADE_STAKE',
+                'TRADE_WIN',
+                'WITHDRAWAL_RESERVE',
+                'WITHDRAWAL_RELEASE',
+                'WITHDRAWAL_PAID',
+                'REFERRAL',
+                'ADMIN_ADJUSTMENT'
+            )
+        )
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_wallet
+ON wallet_ledger(wallet_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_user
+ON wallet_ledger(user_id);
+
+
+-- =====================================================
+-- 8. ADMINS
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS admins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    email VARCHAR(255) NOT NULL UNIQUE,
+
     password_hash TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+
+    role VARCHAR(30) NOT NULL DEFAULT 'ADMIN',
+
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT admins_role_check
+        CHECK (role IN ('ADMIN', 'SUPER_ADMIN'))
 );
 
-CREATE TABLE payment_logs (
+
+-- =====================================================
+-- 9. PAYMENT LOGS
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS payment_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
     deposit_id UUID REFERENCES deposits(id),
+
+    withdrawal_id UUID REFERENCES withdrawals(id),
+
     provider VARCHAR(30) NOT NULL,
-    event_type VARCHAR(100),
-    payload JSONB,
-    processed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+
+    event_type VARCHAR(100) NOT NULL,
+
+    payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+
+    processed BOOLEAN NOT NULL DEFAULT FALSE,
+
+    processing_error TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_trades_user ON trades(user_id);
-CREATE INDEX idx_deposits_user ON deposits(user_id);
-CREATE INDEX idx_withdrawals_user ON withdrawals(user_id);
-CREATE INDEX idx_transactions_user ON transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_payment_logs_deposit
+ON payment_logs(deposit_id);
+
+CREATE INDEX IF NOT EXISTS idx_payment_logs_withdrawal
+ON payment_logs(withdrawal_id);
+
+CREATE INDEX IF NOT EXISTS idx_payment_logs_processed
+ON payment_logs(processed);
+
+
+-- =====================================================
+-- 10. ADMIN ACTIVITY LOG
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS admin_activity_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    admin_id UUID REFERENCES admins(id),
+
+    action VARCHAR(100) NOT NULL,
+
+    target_type VARCHAR(50),
+
+    target_id UUID,
+
+    details JSONB NOT NULL DEFAULT '{}'::JSONB,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_activity_date
+ON admin_activity_logs(created_at);
+
+
+-- =====================================================
+-- END OF GTN DATABASE SCHEMA
+-- =====================================================
