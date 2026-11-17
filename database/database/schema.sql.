@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS withdrawals (
     status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
 
     admin_note TEXT,
-    reviewed_by UUID REFERENCES users(id),
+    reviewed_by UUID,
     reviewed_at TIMESTAMPTZ,
 
     paid_at TIMESTAMPTZ,
@@ -484,6 +484,12 @@ ON payment_logs(processed);
 
 CREATE TABLE IF NOT EXISTS admin_activity_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ALTER TABLE withdrawals
+DROP CONSTRAINT IF EXISTS withdrawals_reviewed_by_fkey;
+
+ALTER TABLE withdrawals
+ADD CONSTRAINT withdrawals_reviewed_by_fkey
+FOREIGN KEY (reviewed_by) REFERENCES admins(id);
 
     admin_id UUID REFERENCES admins(id),
 
