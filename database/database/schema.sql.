@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS users (
 
     kyc_status VARCHAR(30) NOT NULL DEFAULT 'unverified',
     two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+
+    account_status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+        CHECK (account_status IN ('ACTIVE', 'SUSPENDED')),
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    kyc_status VARCHAR(30) NOT NULL DEFAULT 'unverified',
+    two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
 account_status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
     CHECK (account_status IN ('ACTIVE', 'SUSPENDED')),
 
