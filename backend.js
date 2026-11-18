@@ -1,8 +1,10 @@
+
+'use strict';
+
 // ============================================================
 // GTN BINARY OPTIONS PLATFORM
-// Complete PostgreSQL Backend
-// File: backend.js
-// Requirements: Node.js 18+
+// PostgreSQL + Pesapal + Manual M-Pesa Withdrawals
+// Node.js 18+
 // ============================================================
 
 require('dotenv').config();
@@ -14,26 +16,17 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const path = require('path');
+
 const db = require('./database/db');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-app.use(cors());
-app.use(express.json({ limit: '2mb' }));
-
 const PORT = Number(process.env.PORT || 4000);
 const JWT_SECRET = process.env.JWT_SECRET;
 const KES_PER_USD = Number(process.env.KES_PER_USD || 130);
-
-if (!JWT_SECRET || JWT_SECRET.length < 32) {
-    throw new Error('JWT_SECRET must contain at least 32 characters.');
-}
-
-if (!Number.isFinite(KES_PER_USD) || KES_PER_USD <= 0) {
-    throw new Error('KES_PER_USD must be a valid positive number.');
-}
 
 const PAYOUT_RATE = 0.80;
 const MIN_TRADE = 5;
@@ -48,28 +41,33 @@ const SYMBOLS = [
     'VOL_100'
 ];
 
-const prices = {};
-const priceHistory = {};
-
-for (const symbol of SYMBOLS) {
-    prices[symbol] = 100 + Math.random() * 100;
-    priceHistory[symbol] = [];
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+    throw new Error('JWT_SECRET must contain at least 32 characters.');
 }
+
+if (!Number.isFinite(KES_PER_USD) || KES_PER_USD <= 0) {
+    throw new Error('KES_PER_USD must be positive.');
+}
+
+app.use(cors());
+app.use(express.json({ limit: '2mb' }));
+app.use(express.static(__dirname));
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'frontend.html'));
+});
 
 // ============================================================
 // GENERAL HELPERS
 // ============================================================
 
-function makeReference(prefix = 'GTN') {
-    return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-}
-
 function money(value) {
     return Number(Number(value || 0).toFixed(2));
 }
 
-function generateReferralCode() {
-    return crypto.randomBytes(5).toString('hex').toUpperCase();
+function reference(prefix = 'GTN') {
+    return `${prefix}-${Date.now()}-${crypto.randomBytes(5)
+        .toString('hex').toUpperCase()}`;
 }
 
 function asyncHandler(fn) {
@@ -78,181 +76,362 @@ function asyncHandler(fn) {
     };
 }
 
-function signToken(user) {
+function signCustomer(user) {
     return jwt.sign(
-        {
-            id: user.id,
-            email: user.email,
-            role: 'CUSTOMER'
-        },
+        { id: user.id, role: 'CUSTOMER' },
         JWT_SECRET,
         { expiresIn: '7d' }
     );
 }
 
-function auth(req, res, next) {
-    const header = req.headers.authorization;
-
-    if (!header || !header.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Authentication required.' });
-    }
-
-    try {
-        req.user = jwt.verify(header.substring(7), JWT_SECRET);
-        next();
-    } catch {
-        return res.status(401).json({ error: 'Invalid or expired token.' });
-    }
+function signAdmin(admin) {
+    return jwt.sign(
+        {
+            id: admin.id,
+            email: admin.email,
+            role: admin.role
+        },
+        JWT_SECRET,
+        { expiresIn: '8h' }
+    );
 }
 
-function adminAuth(req, res, next) {
-    const header = req.headers.authorization;
+function customerView(user, wallets = []) {
+    const demo = wallets.find(w => w.account_type === 'DEMO');
+    const live = wallets.find(w => w.account_type === 'LIVE');
 
-    if (!header || !header.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Admin authentication required.' });
+    return {
+        id: user.id,
+        fullName: user.full_name,
+        email: user.email,
+        phone: user.phone,
+        country: user.country || 'KE',
+        referralCode: user.referral_code,
+        referralsCount: Number(user.referrals_count || 0),
+        referralEarnings: money(user.referral_earnings),
+        kycStatus: user.kyc_status,
+        accountStatus: user.account_status,
+        twoFactorEnabled: Boolean(user.two_factor_enabled),
+        demoBalance: money(demo?.balance),
+        liveBalance: money(live?.balance)
+    };
+}
+
+function tradeView(trade) {
+    return {
+        ...trade,
+        marketName: trade.symbol,
+        contractType: trade.contract_type,
+        accountType: trade.account_type,
+        entryPrice: Number(trade.entry_price),
+        exitPrice: trade.exit_price == null
+            ? null : Number(trade.exit_price),
+        exitDigit: trade.exit_digit,
+        createdAt: trade.created_at,
+        expiresAt: trade.expires_at,
+        stake: money(trade.stake),
+        profit: money(trade.profit),
+        payoutRate: Number(trade.payout_rate)
+    };
+}
+
+function transactionView(item) {
+    return {
+        id: item.id,
+        type: item.type,
+        method: item.provider || '',
+        accountType: item.wallet_id ? 'LIVE' : '',
+        amount: money(item.amount),
+        status: item.status,
+        destination: item.description || '',
+        timestamp: item.created_at,
+        reference: item.reference
+    };
+}
+
+function normalizePhone(phone) {
+    let value = String(phone || '').replace(/\s+/g, '');
+
+    if (value.startsWith('0')) {
+        value = '+254' + value.substring(1);
+    } else if (value.startsWith('254')) {
+        value = '+' + value;
+    } else if (/^7\d{8}$/.test(value)) {
+        value = '+254' + value;
     }
 
-    try {
-        const decoded = jwt.verify(header.substring(7), JWT_SECRET);
+    return value;
+}
 
-        if (decoded.role !== 'ADMIN' && decoded.role !== 'SUPER_ADMIN') {
-            return res.status(403).json({ error: 'Administrator access required.' });
+function validPhone(phone) {
+    return /^\+254[17]\d{8}$/.test(phone);
+}
+
+async function withTransaction(callback) {
+    const client = await db.pool.connect();
+
+    try {
+        await client.query('BEGIN');
+        const result = await callback(client);
+        await client.query('COMMIT');
+        return result;
+    } catch (error) {
+        try {
+            await client.query('ROLLBACK');
+        } catch (rollbackError) {
+            console.error('Rollback error:', rollbackError.message);
         }
-
-        req.admin = decoded;
-        next();
-    } catch {
-        return res.status(401).json({ error: 'Invalid or expired admin token.' });
+        throw error;
+    } finally {
+        client.release();
     }
-}
-
-function superAdminOnly(req, res, next) {
-    if (req.admin.role !== 'SUPER_ADMIN') {
-        return res.status(403).json({ error: 'Super administrator access required.' });
-    }
-
-    next();
 }
 
 async function getWallet(client, userId, accountType) {
     const result = await client.query(
-        `SELECT * FROM wallets
+        `SELECT *
+         FROM wallets
          WHERE user_id = $1 AND account_type = $2
          FOR UPDATE`,
         [userId, accountType]
     );
 
-    return result.rows[0];
-}
-
-async function logAdminAction(client, adminId, action, targetType, targetId, details = {}) {
-    await client.query(
-        `INSERT INTO admin_activity_logs
-         (admin_id, action, target_type, target_id, details)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [adminId, action, targetType, targetId, JSON.stringify(details)]
-    );
-}
-
-async function insertLedger(client, data) {
-    await client.query(
-        `INSERT INTO wallet_ledger (
-            wallet_id,
-            user_id,
-            entry_type,
-            amount,
-            balance_before,
-            balance_after,
-            reserved_before,
-            reserved_after,
-            reference,
-            idempotency_key,
-            description
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [
-            data.walletId,
-            data.userId,
-            data.entryType,
-            data.amount,
-            data.balanceBefore,
-            data.balanceAfter,
-            data.reservedBefore,
-            data.reservedAfter,
-            data.reference || null,
-            data.idempotencyKey,
-            data.description || null
-        ]
-    );
+    return result.rows[0] || null;
 }
 
 async function insertTransaction(client, data) {
     const result = await client.query(
         `INSERT INTO transactions (
-            user_id,
-            wallet_id,
-            type,
-            amount,
-            status,
-            reference,
-            description
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-        RETURNING *`,
+            user_id, wallet_id, reference,
+            type, amount, currency, status,
+            description, provider, provider_reference
+         )
+         VALUES ($1,$2,$3,$4,$5,'USD',$6,$7,$8,$9)
+         RETURNING *`,
         [
             data.userId,
-            data.walletId,
+            data.walletId || null,
+            data.reference,
             data.type,
             data.amount,
             data.status,
-            data.reference,
-            data.description || null
+            data.description || null,
+            data.provider || null,
+            data.providerReference || null
         ]
     );
 
     return result.rows[0];
 }
 
-function broadcast(payload) {
-    const message = JSON.stringify(payload);
+async function insertLedger(client, data) {
+    await client.query(
+        `INSERT INTO wallet_ledger (
+            wallet_id, user_id, entry_type,
+            reference, idempotency_key, amount,
+            balance_before, balance_after,
+            reserved_before, reserved_after,
+            description
+         )
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (idempotency_key) DO NOTHING`,
+        [
+            data.walletId,
+            data.userId,
+            data.entryType,
+            data.reference,
+            data.idempotencyKey,
+            data.amount,
+            data.balanceBefore,
+            data.balanceAfter,
+            data.reservedBefore,
+            data.reservedAfter,
+            data.description || null
+        ]
+    );
+}
 
-    for (const client of wss.clients) {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(message);
-        }
+async function logAdminAction(
+    client,
+    adminId,
+    action,
+    targetType,
+    targetId,
+    details = {}
+) {
+    await client.query(
+        `INSERT INTO admin_activity_logs (
+            admin_id, action, target_type, target_id, details
+         )
+         VALUES ($1,$2,$3,$4,$5)`,
+        [
+            adminId,
+            action,
+            targetType,
+            targetId,
+            JSON.stringify(details)
+        ]
+    );
+}
+
+// ============================================================
+// AUTHENTICATION
+// ============================================================
+
+async function customerAuth(req, res, next) {
+    const header = req.headers.authorization;
+
+    if (!header || !header.startsWith('Bearer ')) {
+        return res.status(401).json({
+            error: 'Authentication required.'
+        });
     }
+
+    try {
+        const decoded = jwt.verify(header.substring(7), JWT_SECRET);
+
+        if (decoded.role !== 'CUSTOMER') {
+            return res.status(403).json({
+                error: 'Customer access required.'
+            });
+        }
+
+        const result = await db.query(
+            `SELECT id, account_status
+             FROM users
+             WHERE id = $1`,
+            [decoded.id]
+        );
+
+        if (!result.rows.length ||
+            result.rows[0].account_status !== 'ACTIVE') {
+            return res.status(403).json({
+                error: 'Account unavailable.'
+            });
+        }
+
+        req.user = decoded;
+        next();
+    } catch (error) {
+        if (error.name === 'JsonWebTokenError' ||
+            error.name === 'TokenExpiredError') {
+            return res.status(401).json({
+                error: 'Invalid or expired token.'
+            });
+        }
+
+        next(error);
+    }
+}
+
+async function adminAuth(req, res, next) {
+    const header = req.headers.authorization;
+
+    if (!header || !header.startsWith('Bearer ')) {
+        return res.status(401).json({
+            error: 'Admin authentication required.'
+        });
+    }
+
+    try {
+        const decoded = jwt.verify(header.substring(7), JWT_SECRET);
+
+        if (!['ADMIN', 'SUPER_ADMIN'].includes(decoded.role)) {
+            return res.status(403).json({
+                error: 'Administrator access required.'
+            });
+        }
+
+        const result = await db.query(
+            `SELECT id, email, role, active
+             FROM admins
+             WHERE id = $1`,
+            [decoded.id]
+        );
+
+        const admin = result.rows[0];
+
+        if (!admin || !admin.active ||
+            admin.role !== decoded.role) {
+            return res.status(403).json({
+                error: 'Administrator account is disabled.'
+            });
+        }
+
+        req.admin = admin;
+        next();
+    } catch (error) {
+        if (error.name === 'JsonWebTokenError' ||
+            error.name === 'TokenExpiredError') {
+            return res.status(401).json({
+                error: 'Invalid or expired admin token.'
+            });
+        }
+
+        next(error);
+    }
+}
+
+function superAdminOnly(req, res, next) {
+    if (req.admin.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({
+            error: 'Super administrator access required.'
+        });
+    }
+
+    next();
 }
 
 // ============================================================
 // MARKET ENGINE
 // ============================================================
 
+const prices = {};
+const priceHistory = {};
+
+for (const symbol of SYMBOLS) {
+    prices[symbol] = 100 + Math.random() * 100;
+    priceHistory[symbol] = [];
+}
+
+function lastDigit(price) {
+    return Math.abs(Math.floor(Number(price) * 10000) % 10);
+}
+
+function broadcast(payload) {
+    const message = JSON.stringify(payload);
+
+    for (const socket of wss.clients) {
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(message);
+        }
+    }
+}
+
 function generateTick(symbol) {
     const previous = prices[symbol];
 
-    const volatility = symbol === 'VOL_10_1S'
-        ? 0.0005
-        : symbol === 'VOL_25'
-            ? 0.001
-            : symbol === 'VOL_50'
-                ? 0.002
-                : symbol === 'VOL_75'
-                    ? 0.003
-                    : 0.004;
+    const volatility = {
+        VOL_10_1S: 0.0005,
+        VOL_25: 0.001,
+        VOL_50: 0.002,
+        VOL_75: 0.003,
+        VOL_100: 0.004
+    }[symbol];
 
-    const movement = (Math.random() - 0.5) * previous * volatility * 2;
+    const movement =
+        (Math.random() - 0.5) * previous * volatility * 2;
 
     const current = Math.max(1, previous + movement);
-
     prices[symbol] = current;
 
     const tick = {
         symbol,
         price: Number(current.toFixed(4)),
+        time: new Date().toISOString(),
         timestamp: new Date().toISOString(),
-        digit: Math.abs(
-            Math.floor(current * 10000) % 10
-        )
+        lastDigit: lastDigit(current),
+        digit: lastDigit(current)
     };
 
     priceHistory[symbol].push(tick);
@@ -261,19 +440,16 @@ function generateTick(symbol) {
         priceHistory[symbol].shift();
     }
 
+    // Frontend expects message.data[marketSymbol].
     broadcast({
         type: 'TICK',
-        data: tick
+        data: {
+            [symbol]: tick
+        }
     });
 
     return tick;
 }
-
-setInterval(() => {
-    for (const symbol of SYMBOLS) {
-        generateTick(symbol);
-    }
-}, 1000);
 
 app.get('/api/markets', (req, res) => {
     res.json({
@@ -288,7 +464,9 @@ app.get('/api/markets/:symbol/history', (req, res) => {
     const symbol = req.params.symbol;
 
     if (!SYMBOLS.includes(symbol)) {
-        return res.status(404).json({ error: 'Market not found.' });
+        return res.status(404).json({
+            error: 'Market not found.'
+        });
     }
 
     res.json({
@@ -298,81 +476,108 @@ app.get('/api/markets/:symbol/history', (req, res) => {
 });
 
 wss.on('connection', socket => {
-    socket.send(JSON.stringify({
-        type: 'MARKETS',
-        data: SYMBOLS.map(symbol => ({
+    const data = {};
+
+    for (const symbol of SYMBOLS) {
+        data[symbol] = {
             symbol,
-            price: prices[symbol]
-        }))
+            price: prices[symbol],
+            time: new Date().toISOString(),
+            lastDigit: lastDigit(prices[symbol])
+        };
+    }
+
+    socket.send(JSON.stringify({
+        type: 'TICK',
+        data
     }));
 });
+
+const marketTimer = setInterval(() => {
+    for (const symbol of SYMBOLS) {
+        generateTick(symbol);
+    }
+}, 1000);
 
 // ============================================================
 // CUSTOMER REGISTRATION
 // ============================================================
 
 app.post('/api/auth/register', asyncHandler(async (req, res) => {
-    const {
-        fullName,
-        name,
-        email,
-        phone,
-        password,
-        referredBy
-    } = req.body;
+    const fullName = String(
+        req.body.fullName || req.body.name || ''
+    ).trim();
 
-    const customerName = String(fullName || name || '').trim();
-    const customerEmail = String(email || '').trim().toLowerCase();
+    const email = String(req.body.email || '')
+        .trim().toLowerCase();
 
-    if (!customerName || !customerEmail || !phone || !password) {
+    const phone = normalizePhone(req.body.phone);
+    const password = String(req.body.password || '');
+
+    const country = String(req.body.country || 'KE')
+        .trim().toUpperCase().slice(0, 5);
+
+    if (!fullName || !email || !phone || !password) {
         return res.status(400).json({
             error: 'Full name, email, phone and password are required.'
         });
     }
 
-    if (password.length < 8) {
+    if (password.length < 6) {
         return res.status(400).json({
-            error: 'Password must contain at least 8 characters.'
+            error: 'Password must contain at least 6 characters.'
         });
     }
 
-    const client = await db.pool.connect();
+    if (!validPhone(phone)) {
+        return res.status(400).json({
+            error: 'Enter a valid Kenyan M-Pesa phone number.'
+        });
+    }
 
-    try {
-        await client.query('BEGIN');
+    const passwordHash = await bcrypt.hash(password, 12);
 
+    const user = await withTransaction(async client => {
         const existing = await client.query(
-            'SELECT id FROM users WHERE email = $1 OR phone = $2',
-            [customerEmail, phone]
+            `SELECT id FROM users
+             WHERE email = $1 OR phone = $2`,
+            [email, phone]
         );
 
         if (existing.rows.length) {
-            await client.query('ROLLBACK');
-
-            return res.status(409).json({
-                error: 'Email or phone number already registered.'
-            });
+            const error = new Error(
+                'Email or phone number already registered.'
+            );
+            error.status = 409;
+            throw error;
         }
 
-        let referralCode = generateReferralCode();
+        let referralCode;
 
-        for (let attempt = 0; attempt < 5; attempt++) {
+        for (let i = 0; i < 10; i++) {
+            referralCode = crypto.randomBytes(5)
+                .toString('hex').toUpperCase();
+
             const check = await client.query(
                 'SELECT id FROM users WHERE referral_code = $1',
                 [referralCode]
             );
 
             if (!check.rows.length) break;
+            referralCode = null;
+        }
 
-            referralCode = generateReferralCode();
+        if (!referralCode) {
+            throw new Error('Could not generate referral code.');
         }
 
         let referrerId = null;
+        const referredBy = String(req.body.referredBy || '').trim();
 
         if (referredBy) {
             const referrer = await client.query(
-                'SELECT id FROM users WHERE referral_code = $1',
-                [String(referredBy).trim()]
+                `SELECT id FROM users WHERE referral_code = $1`,
+                [referredBy]
             );
 
             if (referrer.rows.length) {
@@ -380,24 +585,17 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
             }
         }
 
-        const passwordHash = await bcrypt.hash(password, 12);
-
-        const userResult = await client.query(
+        const inserted = await client.query(
             `INSERT INTO users (
-                full_name,
-                email,
-                phone,
-                password_hash,
-                referral_code,
-                referred_by,
-                country,
-                account_status
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,'KE','ACTIVE')
-            RETURNING id, full_name, email, phone, referral_code`,
+                full_name, email, country, phone,
+                password_hash, referral_code, referred_by
+             )
+             VALUES ($1,$2,$3,$4,$5,$6,$7)
+             RETURNING *`,
             [
-                customerName,
-                customerEmail,
+                fullName,
+                email,
+                country,
                 phone,
                 passwordHash,
                 referralCode,
@@ -405,70 +603,61 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
             ]
         );
 
-        const user = userResult.rows[0];
+        const created = inserted.rows[0];
 
-        const demoWallet = await client.query(
+        const demo = await client.query(
             `INSERT INTO wallets (
-                user_id,
-                account_type,
-                currency,
-                balance,
-                reserved_balance
-            )
-            VALUES ($1,'DEMO','USD',1000,0)
-            RETURNING *`,
-            [user.id]
+                user_id, account_type, currency, balance
+             )
+             VALUES ($1,'DEMO','USD',1000)
+             RETURNING *`,
+            [created.id]
         );
 
-        await client.query(
+        const live = await client.query(
             `INSERT INTO wallets (
-                user_id,
-                account_type,
-                currency,
-                balance,
-                reserved_balance
-            )
-            VALUES ($1,'LIVE','USD',0,0)`,
-            [user.id]
+                user_id, account_type, currency, balance
+             )
+             VALUES ($1,'LIVE','USD',0)
+             RETURNING *`,
+            [created.id]
         );
 
         await insertLedger(client, {
-            walletId: demoWallet.rows[0].id,
-            userId: user.id,
+            walletId: demo.rows[0].id,
+            userId: created.id,
             entryType: 'INITIAL_DEMO',
+            reference: reference('DEMO'),
+            idempotencyKey: `INITIAL_DEMO_${created.id}`,
             amount: 1000,
             balanceBefore: 0,
             balanceAfter: 1000,
             reservedBefore: 0,
             reservedAfter: 0,
-            reference: makeReference('DEMO'),
-            idempotencyKey: `INITIAL_DEMO_${user.id}`,
-            description: 'Initial demo wallet funding'
+            description: 'Initial demo wallet'
         });
 
         if (referrerId) {
             await client.query(
                 `UPDATE users
-                 SET referrals_count = referrals_count + 1
+                 SET referrals_count = referrals_count + 1,
+                     updated_at = NOW()
                  WHERE id = $1`,
                 [referrerId]
             );
         }
 
-        await client.query('COMMIT');
+        return {
+            user: created,
+            wallets: [demo.rows[0], live.rows[0]]
+        };
+    });
 
-        res.status(201).json({
-            message: 'Registration successful.',
-            token: signToken(user),
-            user
-        });
-
-    } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-    } finally {
-        client.release();
-    }
+    res.status(201).json({
+        message: 'Registration successful.',
+        token: signCustomer(user.user),
+        user: customerView(user.user, user.wallets)
+    });
 }));
 
 // ============================================================
@@ -476,7 +665,9 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
 // ============================================================
 
 app.post('/api/auth/login', asyncHandler(async (req, res) => {
-    const email = String(req.body.email || '').trim().toLowerCase();
+    const email = String(req.body.email || '')
+        .trim().toLowerCase();
+
     const password = String(req.body.password || '');
 
     if (!email || !password) {
@@ -486,40 +677,36 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     }
 
     const result = await db.query(
-        `SELECT id, full_name, email, phone,
-                password_hash, referral_code, account_status
-         FROM users
-         WHERE email = $1`,
+        `SELECT * FROM users WHERE email = $1`,
         [email]
     );
 
-    if (!result.rows.length) {
-        return res.status(401).json({ error: 'Invalid login details.' });
-    }
-
     const user = result.rows[0];
 
-    if (user.account_status === 'SUSPENDED') {
+    if (!user || !(await bcrypt.compare(
+        password,
+        user.password_hash
+    ))) {
+        return res.status(401).json({
+            error: 'Invalid login details.'
+        });
+    }
+
+    if (user.account_status !== 'ACTIVE') {
         return res.status(403).json({
             error: 'Your account has been suspended.'
         });
     }
 
-    const validPassword = await bcrypt.compare(
-        password,
-        user.password_hash
+    const wallets = await db.query(
+        `SELECT * FROM wallets WHERE user_id = $1`,
+        [user.id]
     );
-
-    if (!validPassword) {
-        return res.status(401).json({ error: 'Invalid login details.' });
-    }
-
-    delete user.password_hash;
 
     res.json({
         message: 'Login successful.',
-        token: signToken(user),
-        user
+        token: signCustomer(user),
+        user: customerView(user, wallets.rows)
     });
 }));
 
@@ -527,53 +714,42 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
 // CUSTOMER STATE
 // ============================================================
 
-app.get('/api/state', auth, asyncHandler(async (req, res) => {
-    const userResult = await db.query(
-        `SELECT id, full_name, email, phone,
-                referral_code, referrals_count,
-                referral_earnings, kyc_status,
-                account_status
-         FROM users WHERE id = $1`,
-        [req.user.id]
-    );
+app.get('/api/state', customerAuth, asyncHandler(async (req, res) => {
+    const [userResult, walletResult, tradeResult, transactionResult] =
+        await Promise.all([
+            db.query(
+                `SELECT * FROM users WHERE id = $1`,
+                [req.user.id]
+            ),
+            db.query(
+                `SELECT * FROM wallets WHERE user_id = $1`,
+                [req.user.id]
+            ),
+            db.query(
+                `SELECT * FROM trades
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC LIMIT 100`,
+                [req.user.id]
+            ),
+            db.query(
+                `SELECT * FROM transactions
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC LIMIT 100`,
+                [req.user.id]
+            )
+        ]);
 
-    if (!userResult.rows.length) {
-        return res.status(404).json({ error: 'User not found.' });
-    }
-
-    const wallets = await db.query(
-        `SELECT id, account_type, currency,
-                balance, reserved_balance
-         FROM wallets
-         WHERE user_id = $1`,
-        [req.user.id]
-    );
-
-    const trades = await db.query(
-        `SELECT * FROM trades
-         WHERE user_id = $1
-         ORDER BY created_at DESC
-         LIMIT 100`,
-        [req.user.id]
-    );
-
-    const transactions = await db.query(
-        `SELECT * FROM transactions
-         WHERE user_id = $1
-         ORDER BY created_at DESC
-         LIMIT 100`,
-        [req.user.id]
-    );
+    const wallets = walletResult.rows;
 
     res.json({
-        user: userResult.rows[0],
-        wallets: wallets.rows.map(wallet => ({
-            ...wallet,
-            balance: money(wallet.balance),
-            reserved_balance: money(wallet.reserved_balance)
+        user: customerView(userResult.rows[0], wallets),
+        wallets: wallets.map(w => ({
+            ...w,
+            balance: money(w.balance),
+            reserved_balance: money(w.reserved_balance)
         })),
-        trades: trades.rows,
-        transactions: transactions.rows
+        trades: tradeResult.rows.map(tradeView),
+        transactions: transactionResult.rows.map(transactionView)
     });
 }));
 
@@ -582,37 +758,27 @@ app.get('/api/state', auth, asyncHandler(async (req, res) => {
 // ============================================================
 
 function evaluateTrade(trade, exitPrice) {
-    const exitDigit = Math.abs(
-        Math.floor(Number(exitPrice) * 10000) % 10
-    );
-
-    const entryDigit = Number(trade.entry_digit);
+    const exitDigit = lastDigit(exitPrice);
+    const entryPrice = Number(trade.entry_price);
+    const barrier = Number(trade.barrier);
 
     switch (trade.contract_type) {
         case 'RISE':
-            return exitPrice > Number(trade.entry_price);
-
+            return exitPrice > entryPrice;
         case 'FALL':
-            return exitPrice < Number(trade.entry_price);
-
+            return exitPrice < entryPrice;
         case 'EVEN':
             return exitDigit % 2 === 0;
-
         case 'ODD':
             return exitDigit % 2 !== 0;
-
         case 'OVER':
-            return exitDigit > Number(trade.barrier);
-
+            return exitDigit > barrier;
         case 'UNDER':
-            return exitDigit < Number(trade.barrier);
-
+            return exitDigit < barrier;
         case 'MATCH':
-            return exitDigit === Number(trade.barrier);
-
+            return exitDigit === barrier;
         case 'DIFF':
-            return exitDigit !== Number(trade.barrier);
-
+            return exitDigit !== barrier;
         default:
             return false;
     }
@@ -622,350 +788,299 @@ function evaluateTrade(trade, exitPrice) {
 // PLACE TRADE
 // ============================================================
 
-app.post('/api/trades/place', auth, asyncHandler(async (req, res) => {
-    const {
-        symbol,
-        market,
-        accountType,
-        account_type,
-        contractType,
-        contract_type,
-        type,
-        stake,
-        amount,
-        duration,
-        durationSec,
-        barrier
-    } = req.body;
+app.post('/api/trades/place', customerAuth, asyncHandler(async (req, res) => {
+    const symbol = String(
+        req.body.symbol || req.body.market || ''
+    );
 
-    const selectedSymbol = symbol || market;
-    const selectedAccount = String(
-        accountType || account_type || 'DEMO'
+    const accountType = String(
+        req.body.accountType || req.body.account_type || 'DEMO'
     ).toUpperCase();
 
-    const selectedContract = String(
-        contractType || contract_type || type || ''
+    const contractType = String(
+        req.body.contractType ||
+        req.body.contract_type ||
+        req.body.type || ''
     ).toUpperCase();
 
-    const tradeStake = Number(stake ?? amount);
-    const tradeDuration = Number(durationSec ?? duration);
+    const stake = Number(req.body.stake ?? req.body.amount);
 
-    const validContracts = [
+    const duration = Number(
+        req.body.durationSec ?? req.body.duration ?? 2
+    );
+
+    const barrierRequired = [
+        'OVER', 'UNDER', 'MATCH', 'DIFF'
+    ].includes(contractType);
+
+    const barrier = barrierRequired
+        ? Number(req.body.barrier)
+        : null;
+
+    const contracts = [
         'RISE', 'FALL', 'EVEN', 'ODD',
         'OVER', 'UNDER', 'MATCH', 'DIFF'
     ];
 
-    if (!SYMBOLS.includes(selectedSymbol)) {
-        return res.status(400).json({ error: 'Invalid market.' });
-    }
-
-    if (!['DEMO', 'LIVE'].includes(selectedAccount)) {
-        return res.status(400).json({ error: 'Invalid account type.' });
-    }
-
-    if (!validContracts.includes(selectedContract)) {
-        return res.status(400).json({ error: 'Invalid contract type.' });
-    }
-
-    if (!Number.isFinite(tradeStake) || tradeStake < MIN_TRADE) {
+    if (!SYMBOLS.includes(symbol)) {
         return res.status(400).json({
-            error: `Minimum trade amount is $${MIN_TRADE}.`
+            error: 'Invalid market.'
         });
     }
 
-    if (!Number.isInteger(tradeDuration) ||
-        tradeDuration < 5 ||
-        tradeDuration > 3600) {
+    if (!['DEMO', 'LIVE'].includes(accountType)) {
         return res.status(400).json({
-            error: 'Trade duration must be between 5 and 3600 seconds.'
+            error: 'Invalid account type.'
         });
     }
 
-    let selectedBarrier = null;
-
-    if (['OVER', 'UNDER', 'MATCH', 'DIFF'].includes(selectedContract)) {
-        selectedBarrier = Number(barrier);
-
-        if (!Number.isInteger(selectedBarrier) ||
-            selectedBarrier < 0 ||
-            selectedBarrier > 9) {
-            return res.status(400).json({
-                error: 'Barrier must be a digit from 0 to 9.'
-            });
-        }
+    if (!contracts.includes(contractType)) {
+        return res.status(400).json({
+            error: 'Invalid contract type.'
+        });
     }
 
-    const client = await db.pool.connect();
+    if (!Number.isFinite(stake) ||
+        stake < MIN_TRADE ||
+        stake > 100000) {
+        return res.status(400).json({
+            error: `Trade amount must be at least $${MIN_TRADE}.`
+        });
+    }
 
-    try {
-        await client.query('BEGIN');
+    // Frontend sends durationSec: 2.
+    if (!Number.isInteger(duration) ||
+        duration < 1 ||
+        duration > 3600) {
+        return res.status(400).json({
+            error: 'Duration must be between 1 and 3600 seconds.'
+        });
+    }
 
-        const userResult = await client.query(
-            `SELECT account_status
-             FROM users WHERE id = $1 FOR UPDATE`,
-            [req.user.id]
-        );
+    if (barrierRequired &&
+        (!Number.isInteger(barrier) || barrier < 0 || barrier > 9)) {
+        return res.status(400).json({
+            error: 'Barrier must be a digit from 0 to 9.'
+        });
+    }
 
-        if (!userResult.rows.length ||
-            userResult.rows[0].account_status !== 'ACTIVE') {
-            throw new Error('Account is unavailable.');
-        }
-
+    const result = await withTransaction(async client => {
         const wallet = await getWallet(
             client,
             req.user.id,
-            selectedAccount
+            accountType
         );
 
-        if (!wallet) {
-            throw new Error('Wallet not found.');
-        }
+        if (!wallet) throw new Error('Wallet not found.');
 
-        const balanceBefore = money(wallet.balance);
-        const reservedBefore = money(wallet.reserved_balance);
+        const before = money(wallet.balance);
+        const reserved = money(wallet.reserved_balance);
 
-        if (balanceBefore < tradeStake) {
+        if (before < stake) {
             throw new Error('Insufficient wallet balance.');
         }
 
-        const entryPrice = prices[selectedSymbol];
+        const entryPrice = prices[symbol];
+        const entryDigit = lastDigit(entryPrice);
+        const tradeReference = reference('TRADE');
 
-        const entryDigit = Math.abs(
-            Math.floor(entryPrice * 10000) % 10
-        );
-
-        const reference = makeReference('TRADE');
-
-        const updatedWallet = await client.query(
+        const walletUpdate = await client.query(
             `UPDATE wallets
              SET balance = balance - $1,
                  updated_at = NOW()
              WHERE id = $2
              RETURNING balance`,
-            [tradeStake, wallet.id]
+            [stake, wallet.id]
         );
 
-        const balanceAfter = money(updatedWallet.rows[0].balance);
+        const after = money(walletUpdate.rows[0].balance);
 
-        const tradeResult = await client.query(
+        const inserted = await client.query(
             `INSERT INTO trades (
-                user_id,
-                wallet_id,
-                symbol,
-                account_type,
-                contract_type,
-                stake,
-                entry_price,
-                entry_digit,
-                barrier,
-                payout_rate,
-                status,
-                created_at,
-                expires_at
-            )
-            VALUES (
+                user_id, wallet_id, symbol, account_type,
+                contract_type, stake, entry_price, entry_digit,
+                barrier, payout_rate, status, expires_at
+             )
+             VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                'OPEN',NOW(),NOW() + ($11 * INTERVAL '1 second')
-            )
-            RETURNING *`,
+                'OPEN', NOW() + ($11 * INTERVAL '1 second')
+             )
+             RETURNING *`,
             [
                 req.user.id,
                 wallet.id,
-                selectedSymbol,
-                selectedAccount,
-                selectedContract,
-                tradeStake,
+                symbol,
+                accountType,
+                contractType,
+                stake,
                 entryPrice,
                 entryDigit,
-                selectedBarrier,
+                barrier,
                 PAYOUT_RATE,
-                tradeDuration
+                duration
             ]
         );
+
+        const trade = inserted.rows[0];
 
         await insertLedger(client, {
             walletId: wallet.id,
             userId: req.user.id,
             entryType: 'TRADE_STAKE',
-            amount: -tradeStake,
-            balanceBefore,
-            balanceAfter,
-            reservedBefore,
-            reservedAfter: reservedBefore,
-            reference,
-            idempotencyKey: `TRADE_STAKE_${tradeResult.rows[0].id}`,
-            description: 'Trade stake'
+            reference: tradeReference,
+            idempotencyKey: `TRADE_STAKE_${trade.id}`,
+            amount: -stake,
+            balanceBefore: before,
+            balanceAfter: after,
+            reservedBefore: reserved,
+            reservedAfter: reserved,
+            description: `${contractType} trade stake`
         });
 
         await insertTransaction(client, {
             userId: req.user.id,
             walletId: wallet.id,
             type: 'TRADE',
-            amount: tradeStake,
+            amount: stake,
             status: 'COMPLETED',
-            reference,
-            description: `${selectedContract} ${selectedSymbol}`
+            reference: tradeReference,
+            description: `${contractType} ${symbol}`
         });
 
-        await client.query('COMMIT');
+        return { trade, balance: after };
+    });
 
-        res.status(201).json({
-            message: 'Trade placed successfully.',
-            trade: tradeResult.rows[0],
-            balance: balanceAfter
-        });
-
-    } catch (error) {
-        await client.query('ROLLBACK');
-
-        res.status(400).json({
-            error: error.message || 'Unable to place trade.'
-        });
-    } finally {
-        client.release();
-    }
+    res.status(201).json({
+        message: 'Trade placed successfully.',
+        trade: tradeView(result.trade),
+        balance: result.balance
+    });
 }));
 
 // ============================================================
-// TRADE SETTLEMENT WORKER
+// TRADE SETTLEMENT
 // ============================================================
 
 async function settleExpiredTrades() {
-    const client = await db.pool.connect();
-
     try {
-        await client.query('BEGIN');
-
-        const expired = await client.query(
-            `SELECT *
-             FROM trades
-             WHERE status = 'OPEN'
-               AND expires_at <= NOW()
-             ORDER BY expires_at ASC
-             FOR UPDATE SKIP LOCKED
-             LIMIT 50`
-        );
-
-        for (const trade of expired.rows) {
-            const exitPrice = prices[trade.symbol];
-
-            if (exitPrice === undefined) continue;
-
-            const won = evaluateTrade(trade, exitPrice);
-
-            const stake = money(trade.stake);
-            const profit = won
-                ? money(stake * Number(trade.payout_rate))
-                : 0;
-
-            const payout = won
-                ? money(stake + profit)
-                : 0;
-
-            const walletResult = await client.query(
-                `SELECT * FROM wallets
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [trade.wallet_id]
+        await withTransaction(async client => {
+            const expired = await client.query(
+                `SELECT *
+                 FROM trades
+                 WHERE status = 'OPEN'
+                   AND expires_at <= NOW()
+                 ORDER BY expires_at
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT 50`
             );
 
-            if (!walletResult.rows.length) continue;
+            for (const trade of expired.rows) {
+                const exitPrice = prices[trade.symbol];
 
-            const wallet = walletResult.rows[0];
+                if (exitPrice === undefined) continue;
 
-            const balanceBefore = money(wallet.balance);
-            const reservedBefore = money(wallet.reserved_balance);
+                const won = evaluateTrade(trade, exitPrice);
+                const stake = money(trade.stake);
+                const profit = won
+                    ? money(stake * Number(trade.payout_rate))
+                    : 0;
 
-            const balanceAfter = money(balanceBefore + payout);
+                const payout = won
+                    ? money(stake + profit)
+                    : 0;
 
-            await client.query(
-                `UPDATE wallets
-                 SET balance = $1,
-                     updated_at = NOW()
-                 WHERE id = $2`,
-                [balanceAfter, wallet.id]
-            );
+                const walletResult = await client.query(
+                    `SELECT * FROM wallets
+                     WHERE id = $1 FOR UPDATE`,
+                    [trade.wallet_id]
+                );
 
-            await client.query(
-                `UPDATE trades
-                 SET exit_price = $1,
-                     exit_digit = $2,
-                     profit = $3,
-                     status = $4,
-                     settled_at = NOW()
-                 WHERE id = $5`,
-                [
-                    exitPrice,
-                    Math.abs(Math.floor(exitPrice * 10000) % 10),
-                    won ? profit : -stake,
-                    won ? 'WON' : 'LOST',
-                    trade.id
-                ]
-            );
+                if (!walletResult.rows.length) continue;
 
-            if (won) {
-                await insertLedger(client, {
-                    walletId: wallet.id,
-                    userId: trade.user_id,
-                    entryType: 'TRADE_WIN',
-                    amount: payout,
-                    balanceBefore,
-                    balanceAfter,
-                    reservedBefore,
-                    reservedAfter: reservedBefore,
-                    reference: `TRADE-${trade.id}`,
-                    idempotencyKey: `TRADE_WIN_${trade.id}`,
-                    description: 'Winning trade payout'
-                });
+                const wallet = walletResult.rows[0];
+                const before = money(wallet.balance);
+                const reserved = money(wallet.reserved_balance);
+                const after = money(before + payout);
 
-                await insertTransaction(client, {
-                    userId: trade.user_id,
-                    walletId: wallet.id,
-                    type: 'TRADE_WIN',
-                    amount: payout,
-                    status: 'COMPLETED',
-                    reference: `TRADE-${trade.id}`,
-                    description: 'Winning trade payout'
-                });
-            } else {
-                await insertTransaction(client, {
-                    userId: trade.user_id,
-                    walletId: wallet.id,
-                    type: 'TRADE_LOSS',
-                    amount: stake,
-                    status: 'COMPLETED',
-                    reference: `TRADE-${trade.id}`,
-                    description: 'Losing trade'
-                });
+                await client.query(
+                    `UPDATE wallets
+                     SET balance = $1, updated_at = NOW()
+                     WHERE id = $2`,
+                    [after, wallet.id]
+                );
+
+                await client.query(
+                    `UPDATE trades
+                     SET exit_price = $1,
+                         exit_digit = $2,
+                         profit = $3,
+                         status = $4,
+                         settled_at = NOW()
+                     WHERE id = $5`,
+                    [
+                        exitPrice,
+                        lastDigit(exitPrice),
+                        won ? profit : -stake,
+                        won ? 'WON' : 'LOST',
+                        trade.id
+                    ]
+                );
+
+                if (won) {
+                    await insertLedger(client, {
+                        walletId: wallet.id,
+                        userId: trade.user_id,
+                        entryType: 'TRADE_WIN',
+                        reference: `TRADE-${trade.id}`,
+                        idempotencyKey: `TRADE_WIN_${trade.id}`,
+                        amount: payout,
+                        balanceBefore: before,
+                        balanceAfter: after,
+                        reservedBefore: reserved,
+                        reservedAfter: reserved,
+                        description: 'Winning trade payout'
+                    });
+
+                    await insertTransaction(client, {
+                        userId: trade.user_id,
+                        walletId: wallet.id,
+                        type: 'TRADE_WIN',
+                        amount: payout,
+                        status: 'COMPLETED',
+                        reference: `TRADE-${trade.id}`,
+                        description: 'Winning trade payout'
+                    });
+                } else {
+                    await insertTransaction(client, {
+                        userId: trade.user_id,
+                        walletId: wallet.id,
+                        type: 'TRADE_LOSS',
+                        amount: stake,
+                        status: 'COMPLETED',
+                        reference: `TRADE-${trade.id}`,
+                        description: 'Losing trade'
+                    });
+                }
             }
-        }
-
-        await client.query('COMMIT');
-
+        });
     } catch (error) {
-        await client.query('ROLLBACK');
         console.error('Trade settlement error:', error.message);
-    } finally {
-        client.release();
     }
 }
 
-setInterval(settleExpiredTrades, 1000);
+const settlementTimer = setInterval(settleExpiredTrades, 500);
+
 // ============================================================
-// PART 2: PESAPAL DEPOSITS AND PAYMENT VERIFICATION
+// PESAPAL CONFIGURATION
 // ============================================================
 
 const PESAPAL_BASE_URL =
-    process.env.PESAPAL_ENVIRONMENT === 'live'
+    String(process.env.PESAPAL_ENVIRONMENT || 'sandbox').toLowerCase() === 'live'
         ? 'https://pay.pesapal.com/v3'
         : 'https://cybqa.pesapal.com/pesapalv3';
 
 let pesapalToken = null;
 let pesapalTokenExpiry = 0;
-
-// ------------------------------------------------------------
-// PESAPAL CONFIGURATION CHECK
-// ------------------------------------------------------------
 
 function checkPesapalConfiguration() {
     const required = [
@@ -975,28 +1090,19 @@ function checkPesapalConfiguration() {
         'PESAPAL_IPN_ID'
     ];
 
-    const missing = required.filter(
-        key => !process.env[key]
-    );
+    const missing = required.filter(key => !process.env[key]);
 
     if (missing.length) {
         throw new Error(
-            `Missing Pesapal configuration: ${missing.join(', ')}`
+            `Missing Pesapal settings: ${missing.join(', ')}`
         );
     }
 }
 
-// ------------------------------------------------------------
-// PESAPAL AUTHENTICATION
-// ------------------------------------------------------------
-
 async function getPesapalToken() {
     checkPesapalConfiguration();
 
-    if (
-        pesapalToken &&
-        Date.now() < pesapalTokenExpiry
-    ) {
+    if (pesapalToken && Date.now() < pesapalTokenExpiry) {
         return pesapalToken;
     }
 
@@ -1017,27 +1123,15 @@ async function getPesapalToken() {
 
     const data = await response.json();
 
-    if (
-        !response.ok ||
-        !data.token
-    ) {
-        console.error('Pesapal authentication failed:', data);
-
-        throw new Error('Unable to authenticate with Pesapal.');
+    if (!response.ok || !data.token) {
+        throw new Error('Pesapal authentication failed.');
     }
 
     pesapalToken = data.token;
-
-    // Pesapal tokens last for a maximum of five minutes.
-    // Refresh slightly early.
     pesapalTokenExpiry = Date.now() + (4 * 60 * 1000);
 
     return pesapalToken;
 }
-
-// ------------------------------------------------------------
-// PESAPAL API REQUEST HELPER
-// ------------------------------------------------------------
 
 async function pesapalRequest(endpoint, options = {}) {
     const token = await getPesapalToken();
@@ -1058,8 +1152,6 @@ async function pesapalRequest(endpoint, options = {}) {
     const data = await response.json();
 
     if (!response.ok) {
-        console.error('Pesapal API error:', data);
-
         throw new Error(
             data?.error?.message ||
             data?.message ||
@@ -1069,10 +1161,6 @@ async function pesapalRequest(endpoint, options = {}) {
 
     return data;
 }
-
-// ------------------------------------------------------------
-// RECORD PAYMENT EVENT
-// ------------------------------------------------------------
 
 async function recordPaymentLog(
     client,
@@ -1084,14 +1172,10 @@ async function recordPaymentLog(
 ) {
     await client.query(
         `INSERT INTO payment_logs (
-            deposit_id,
-            provider,
-            event_type,
-            payload,
-            processed,
-            processing_error
-        )
-        VALUES ($1,'PESAPAL',$2,$3,$4,$5)`,
+            deposit_id, provider, event_type,
+            payload, processed, processing_error
+         )
+         VALUES ($1,'PESAPAL',$2,$3,$4,$5)`,
         [
             depositId,
             eventType,
@@ -1102,311 +1186,218 @@ async function recordPaymentLog(
     );
 }
 
-// ------------------------------------------------------------
-// CUSTOMER DEPOSIT REQUEST
-// ------------------------------------------------------------
+async function getPesapalStatus(trackingId) {
+    if (!trackingId) {
+        throw new Error('Pesapal tracking ID is missing.');
+    }
+
+    return pesapalRequest(
+        '/api/Transactions/GetTransactionStatus?orderTrackingId=' +
+        encodeURIComponent(trackingId),
+        { method: 'GET' }
+    );
+}
+
+// ============================================================
+// CUSTOMER DEPOSIT
+// ============================================================
 
 app.post(
     '/api/cashier/deposit',
-    auth,
+    customerAuth,
     asyncHandler(async (req, res) => {
-        const usdAmount = Number(
-            req.body.amount ?? req.body.usdAmount
-        );
+        const amount = Number(req.body.amount ?? req.body.usdAmount);
+        const method = String(req.body.method || 'MPESA').toUpperCase();
 
-        const phone = String(
-            req.body.phone || req.body.phoneNumber || ''
-        ).trim();
-
-        if (
-            !Number.isFinite(usdAmount) ||
-            usdAmount < MIN_DEPOSIT ||
-            usdAmount > 100000
-        ) {
+        if (method !== 'MPESA') {
             return res.status(400).json({
-                error: `Deposit must be at least $${MIN_DEPOSIT}.`
+                error: 'Only M-Pesa deposits are supported in this release.'
             });
         }
 
-        if (!/^\+?[0-9]{9,15}$/.test(phone)) {
+        if (!Number.isFinite(amount) ||
+            amount < MIN_DEPOSIT ||
+            amount > 100000) {
             return res.status(400).json({
-                error: 'Enter a valid phone number.'
+                error: `Minimum deposit is $${MIN_DEPOSIT}.`
+            });
+        }
+
+        const userResult = await db.query(
+            `SELECT * FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+
+        const user = userResult.rows[0];
+
+        if (!user) {
+            return res.status(404).json({
+                error: 'User not found.'
+            });
+        }
+
+        const phone = normalizePhone(
+            req.body.phone || req.body.phoneNumber || user.phone
+        );
+
+        if (!validPhone(phone)) {
+            return res.status(400).json({
+                error: 'Enter a valid Kenyan M-Pesa phone number.'
             });
         }
 
         checkPesapalConfiguration();
 
-        const kesAmount = money(
-            usdAmount * KES_PER_USD
-        );
+        const kesAmount = money(amount * KES_PER_USD);
+        const depositReference = reference('GTNDEP');
 
-        const client = await db.pool.connect();
+        const deposit = await withTransaction(async client => {
+            const wallet = await getWallet(client, req.user.id, 'LIVE');
 
-        let deposit;
-
-        try {
-            await client.query('BEGIN');
-
-            const userResult = await client.query(
-                `SELECT id, full_name, email, phone, account_status
-                 FROM users
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [req.user.id]
-            );
-
-            if (
-                !userResult.rows.length ||
-                userResult.rows[0].account_status !== 'ACTIVE'
-            ) {
-                throw new Error('Your account is unavailable.');
-            }
-
-            const user = userResult.rows[0];
-
-            const walletResult = await client.query(
-                `SELECT *
-                 FROM wallets
-                 WHERE user_id = $1
-                   AND account_type = 'LIVE'
-                 FOR UPDATE`,
-                [req.user.id]
-            );
-
-            if (!walletResult.rows.length) {
-                throw new Error('LIVE wallet not found.');
-            }
-
-            const wallet = walletResult.rows[0];
-
-            const reference = makeReference('GTNDEP');
+            if (!wallet) throw new Error('LIVE wallet not found.');
 
             const transaction = await insertTransaction(client, {
                 userId: req.user.id,
                 walletId: wallet.id,
                 type: 'DEPOSIT',
-                amount: usdAmount,
+                amount,
                 status: 'PENDING',
-                reference,
-                description: 'Pesapal deposit'
+                reference: depositReference,
+                provider: 'PESAPAL',
+                description: 'M-Pesa deposit'
             });
 
-            const depositResult = await client.query(
+            const inserted = await client.query(
                 `INSERT INTO deposits (
-                    user_id,
-                    wallet_id,
-                    transaction_id,
-                    reference,
-                    usd_amount,
-                    kes_amount,
-                    exchange_rate,
-                    phone,
-                    status
-                )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'PENDING')
-                RETURNING *`,
+                    user_id, wallet_id, transaction_id,
+                    reference, pesapal_merchant_reference,
+                    usd_amount, kes_amount, exchange_rate,
+                    phone, status
+                 )
+                 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,'PENDING')
+                 RETURNING *`,
                 [
                     req.user.id,
                     wallet.id,
                     transaction.id,
-                    reference,
-                    usdAmount,
+                    depositReference,
+                    amount,
                     kesAmount,
                     KES_PER_USD,
                     phone
                 ]
             );
 
-            deposit = depositResult.rows[0];
-
             await recordPaymentLog(
                 client,
-                deposit.id,
+                inserted.rows[0].id,
                 'DEPOSIT_CREATED',
                 {
-                    usdAmount,
-                    kesAmount,
-                    phone,
-                    reference
-                }
+                    reference: depositReference,
+                    amountUSD: amount,
+                    amountKES: kesAmount,
+                    phone
+                },
+                true
             );
 
-            await client.query('COMMIT');
+            return inserted.rows[0];
+        });
 
-            // Pesapal request happens after the database
-            // transaction commits. This avoids holding a
-            // database lock during an external network call.
-
-            const names = String(user.full_name || '')
-                .trim()
-                .split(/\s+/);
-
-            const firstName = names.shift() || 'Customer';
-            const lastName = names.join(' ') || '';
-
+        try {
             const order = await pesapalRequest(
                 '/api/Transactions/SubmitOrderRequest',
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        id: reference,
+                        id: depositReference,
                         currency: 'KES',
                         amount: kesAmount,
-                        description: `GTN wallet deposit ${reference}`,
+                        description: 'GTN wallet deposit',
                         callback_url: process.env.PESAPAL_CALLBACK_URL,
                         notification_id: process.env.PESAPAL_IPN_ID,
                         billing_address: {
                             email_address: user.email,
                             phone_number: phone,
                             country_code: 'KE',
-                            first_name: firstName,
-                            middle_name: '',
-                            last_name: lastName,
-                            line_1: 'Kenya',
-                            line_2: '',
-                            city: '',
-                            state: '',
-                            postal_code: '',
-                            zip_code: ''
+                            first_name: user.full_name.split(' ')[0] || 'Customer',
+                            last_name: user.full_name.split(' ').slice(1).join(' ') || 'GTN',
+                            line_1: 'Kenya'
                         }
                     })
                 }
             );
 
-            if (
-                !order.order_tracking_id ||
-                !order.redirect_url
-            ) {
-                throw new Error(
-                    'Pesapal did not return a valid checkout URL.'
-                );
+            if (!order.order_tracking_id || !order.redirect_url) {
+                throw new Error('Pesapal did not return a valid checkout URL.');
             }
 
-            const updateClient = await db.pool.connect();
-
-            try {
-                await updateClient.query(
-                    `UPDATE deposits
-                     SET pesapal_tracking_id = $1,
-                         pesapal_merchant_reference = $2,
-                         status = 'PROCESSING',
-                         updated_at = NOW()
-                     WHERE id = $3`,
-                    [
-                        order.order_tracking_id,
-                        order.merchant_reference || reference,
-                        deposit.id
-                    ]
-                );
-
-                await recordPaymentLog(
-                    updateClient,
-                    deposit.id,
-                    'PESAPAL_ORDER_CREATED',
-                    order,
-                    true
-                );
-
-            } finally {
-                updateClient.release();
-            }
+            await db.query(
+                `UPDATE deposits
+                 SET pesapal_tracking_id = $1,
+                     pesapal_merchant_reference = $2,
+                     status = 'PROCESSING',
+                     updated_at = NOW()
+                 WHERE id = $3`,
+                [
+                    order.order_tracking_id,
+                    depositReference,
+                    deposit.id
+                ]
+            );
 
             return res.status(201).json({
                 message: 'Deposit request created.',
-                reference,
-                amountUSD: usdAmount,
+                reference: depositReference,
+                amountUSD: amount,
                 amountKES: kesAmount,
                 exchangeRate: KES_PER_USD,
                 checkoutUrl: order.redirect_url,
-                redirect_url: order.redirect_url
+                transaction: {
+                    reference: depositReference,
+                    status: 'PENDING',
+                    amount,
+                    method: 'MPESA',
+                    checkoutUrl: order.redirect_url
+                }
             });
 
         } catch (error) {
-            if (client) {
-                try {
-                    await client.query('ROLLBACK');
-                } catch {}
-            }
+            await db.query(
+                `UPDATE deposits
+                 SET status = 'FAILED',
+                     provider_status = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [error.message, deposit.id]
+            );
 
-            // If the deposit record already exists, mark it
-            // failed when Pesapal order creation fails.
-            if (deposit?.id) {
-                await db.query(
-                    `UPDATE deposits
-                     SET status = 'FAILED',
-                         provider_status = $1,
-                         updated_at = NOW()
-                     WHERE id = $2
-                       AND status IN ('PENDING','PROCESSING')`,
-                    [
-                        error.message,
-                        deposit.id
-                    ]
-                ).catch(console.error);
+            await db.query(
+                `UPDATE transactions
+                 SET status = 'FAILED', updated_at = NOW()
+                 WHERE reference = $1`,
+                [depositReference]
+            );
 
-                await db.query(
-                    `UPDATE transactions
-                     SET status = 'FAILED'
-                     WHERE id = $1`,
-                    [deposit.transaction_id]
-                ).catch(console.error);
-            }
-
-            console.error('Deposit creation failed:', error.message);
-
-            return res.status(400).json({
-                error: 'Unable to create deposit. Please try again.'
-            });
-
-        } finally {
-            client.release();
+            throw error;
         }
     })
 );
 
-// ------------------------------------------------------------
-// FETCH PESAPAL TRANSACTION STATUS
-// ------------------------------------------------------------
+// ============================================================
+// VERIFY AND CREDIT PESAPAL DEPOSIT
+// ============================================================
 
-async function getPesapalTransactionStatus(orderTrackingId) {
-    if (!orderTrackingId) {
-        throw new Error('Pesapal tracking ID is missing.');
+async function verifyAndCreditDeposit(trackingId, merchantReference) {
+    if (!trackingId || !merchantReference) {
+        throw new Error('Payment references are incomplete.');
     }
 
-    const endpoint =
-        '/api/Transactions/GetTransactionStatus' +
-        `?orderTrackingId=${encodeURIComponent(orderTrackingId)}`;
+    // Always ask Pesapal directly. Never trust the callback status.
+    const payment = await getPesapalStatus(trackingId);
 
-    return pesapalRequest(endpoint, {
-        method: 'GET'
-    });
-}
-
-// ------------------------------------------------------------
-// VERIFY AND CREDIT A DEPOSIT
-// ------------------------------------------------------------
-
-async function verifyAndCreditDeposit(
-    orderTrackingId,
-    merchantReference
-) {
-    if (!orderTrackingId || !merchantReference) {
-        throw new Error('Payment reference information is incomplete.');
-    }
-
-    // Always obtain payment status directly from Pesapal.
-    // Never trust the callback or IPN status by itself.
-
-    const payment = await getPesapalTransactionStatus(
-        orderTrackingId
-    );
-
-    const client = await db.pool.connect();
-
-    try {
-        await client.query('BEGIN');
-
-        const depositResult = await client.query(
+    return withTransaction(async client => {
+        const result = await client.query(
             `SELECT *
              FROM deposits
              WHERE reference = $1
@@ -1414,25 +1405,23 @@ async function verifyAndCreditDeposit(
             [merchantReference]
         );
 
-        if (!depositResult.rows.length) {
-            throw new Error('Deposit record not found.');
+        const deposit = result.rows[0];
+
+        if (!deposit) throw new Error('Deposit not found.');
+
+        if (deposit.pesapal_tracking_id &&
+            deposit.pesapal_tracking_id !== trackingId) {
+            throw new Error('Pesapal tracking ID mismatch.');
         }
 
-        const deposit = depositResult.rows[0];
-
-        if (
-            deposit.pesapal_tracking_id &&
-            deposit.pesapal_tracking_id !== orderTrackingId
-        ) {
-            throw new Error('Payment tracking ID mismatch.');
+        if (deposit.pesapal_merchant_reference &&
+            deposit.pesapal_merchant_reference !== merchantReference) {
+            throw new Error('Pesapal merchant reference mismatch.');
         }
 
-        if (
-            deposit.pesapal_merchant_reference &&
-            deposit.pesapal_merchant_reference !== merchantReference
-        ) {
-            throw new Error('Merchant reference mismatch.');
-        }
+        const status = String(
+            payment.payment_status_description || ''
+        ).toUpperCase();
 
         await recordPaymentLog(
             client,
@@ -1442,52 +1431,15 @@ async function verifyAndCreditDeposit(
             true
         );
 
-        const paymentStatus = String(
-            payment.payment_status_description || ''
-        ).toUpperCase();
-
-        const paidAmount = Number(payment.amount);
-        const paidCurrency = String(
-            payment.currency || ''
-        ).toUpperCase();
-
-        const expectedAmount = Number(deposit.kes_amount);
-
-        // Check the amount and currency before crediting.
-        if (
-            !Number.isFinite(paidAmount) ||
-            Math.abs(paidAmount - expectedAmount) > 0.01 ||
-            paidCurrency !== 'KES'
-        ) {
-            await recordPaymentLog(
-                client,
-                deposit.id,
-                'PAYMENT_VALIDATION_FAILED',
-                {
-                    paidAmount,
-                    expectedAmount,
-                    paidCurrency
-                },
-                false,
-                'Amount or currency mismatch'
-            );
-
-            await client.query('COMMIT');
-
-            throw new Error('Payment amount or currency mismatch.');
-        }
-
-        // A completed deposit must never be credited twice.
+        // An already credited payment must never be credited again.
         if (deposit.status === 'COMPLETED') {
-            await client.query('COMMIT');
-
             return {
-                alreadyCredited: true,
-                status: 'COMPLETED'
+                status: 'COMPLETED',
+                alreadyCredited: true
             };
         }
 
-        if (paymentStatus === 'REVERSED') {
+        if (status === 'REVERSED') {
             await client.query(
                 `UPDATE deposits
                  SET provider_status = 'REVERSED',
@@ -1502,59 +1454,69 @@ async function verifyAndCreditDeposit(
                 'PAYMENT_REVERSED',
                 payment,
                 false,
-                'Pesapal reported a reversed payment. Manual review required.'
+                'Manual reconciliation required.'
             );
 
-            await client.query('COMMIT');
-
-            return {
-                status: 'REVERSED',
-                message: 'Payment reversal requires administrator review.'
-            };
+            return { status: 'REVERSED' };
         }
 
-        if (paymentStatus === 'FAILED' || paymentStatus === 'INVALID') {
+        if (status === 'FAILED' || status === 'INVALID') {
             await client.query(
                 `UPDATE deposits
                  SET status = 'FAILED',
                      provider_status = $1,
                      updated_at = NOW()
                  WHERE id = $2`,
-                [paymentStatus, deposit.id]
+                [status, deposit.id]
             );
 
-            await client.query(
-                `UPDATE transactions
-                 SET status = 'FAILED'
-                 WHERE id = $1`,
-                [deposit.transaction_id]
-            );
+            if (deposit.transaction_id) {
+                await client.query(
+                    `UPDATE transactions
+                     SET status = 'FAILED', updated_at = NOW()
+                     WHERE id = $1`,
+                    [deposit.transaction_id]
+                );
+            }
 
-            await client.query('COMMIT');
-
-            return {
-                status: 'FAILED'
-            };
+            return { status: 'FAILED' };
         }
 
-        if (paymentStatus !== 'COMPLETED') {
+        if (status !== 'COMPLETED') {
             await client.query(
                 `UPDATE deposits
                  SET status = 'PROCESSING',
                      provider_status = $1,
                      updated_at = NOW()
                  WHERE id = $2`,
-                [paymentStatus || 'PENDING', deposit.id]
+                [status || 'PENDING', deposit.id]
             );
 
-            await client.query('COMMIT');
-
-            return {
-                status: 'PROCESSING'
-            };
+            return { status: 'PROCESSING' };
         }
 
-        // Lock the LIVE wallet before crediting.
+        const paidAmount = Number(payment.amount);
+        const paidCurrency = String(payment.currency || '').toUpperCase();
+
+        if (!Number.isFinite(paidAmount) ||
+            Math.abs(paidAmount - Number(deposit.kes_amount)) > 0.01 ||
+            paidCurrency !== 'KES') {
+            await recordPaymentLog(
+                client,
+                deposit.id,
+                'PAYMENT_VALIDATION_FAILED',
+                {
+                    paidAmount,
+                    expectedAmount: Number(deposit.kes_amount),
+                    paidCurrency
+                },
+                false,
+                'Amount or currency mismatch.'
+            );
+
+            throw new Error('Payment amount or currency mismatch.');
+        }
+
         const walletResult = await client.query(
             `SELECT *
              FROM wallets
@@ -1563,131 +1525,101 @@ async function verifyAndCreditDeposit(
             [deposit.wallet_id]
         );
 
-        if (!walletResult.rows.length) {
-            throw new Error('Deposit wallet not found.');
-        }
-
         const wallet = walletResult.rows[0];
 
-        const balanceBefore = money(wallet.balance);
-        const reservedBefore = money(wallet.reserved_balance);
+        if (!wallet) throw new Error('Deposit wallet not found.');
 
-        const balanceAfter = money(
-            balanceBefore + Number(deposit.usd_amount)
-        );
+        const before = money(wallet.balance);
+        const reserved = money(wallet.reserved_balance);
+        const amount = money(deposit.usd_amount);
+        const after = money(before + amount);
 
         await client.query(
             `UPDATE wallets
-             SET balance = $1,
-                 updated_at = NOW()
+             SET balance = $1, updated_at = NOW()
              WHERE id = $2`,
-            [balanceAfter, wallet.id]
+            [after, wallet.id]
         );
 
         await client.query(
             `UPDATE deposits
              SET status = 'COMPLETED',
-                 provider_status = 'COMPLETED',
+                 provider_status = $1,
                  credited_at = NOW(),
                  updated_at = NOW()
-             WHERE id = $1`,
-            [deposit.id]
+             WHERE id = $2`,
+            [status, deposit.id]
         );
 
-        await client.query(
-            `UPDATE transactions
-             SET status = 'COMPLETED'
-             WHERE id = $1`,
-            [deposit.transaction_id]
-        );
+        if (deposit.transaction_id) {
+            await client.query(
+                `UPDATE transactions
+                 SET status = 'COMPLETED',
+                     provider = 'PESAPAL',
+                     provider_reference = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [trackingId, deposit.transaction_id]
+            );
+        }
 
         await insertLedger(client, {
             walletId: wallet.id,
             userId: deposit.user_id,
             entryType: 'DEPOSIT',
-            amount: Number(deposit.usd_amount),
-            balanceBefore,
-            balanceAfter,
-            reservedBefore,
-            reservedAfter: reservedBefore,
             reference: deposit.reference,
-            idempotencyKey: `DEPOSIT_CREDIT_${deposit.id}`,
-            description: 'Verified Pesapal deposit'
+            idempotencyKey: `DEPOSIT_${deposit.id}`,
+            amount,
+            balanceBefore: before,
+            balanceAfter: after,
+            reservedBefore: reserved,
+            reservedAfter: reserved,
+            description: 'Verified Pesapal M-Pesa deposit'
         });
-
-        await recordPaymentLog(
-            client,
-            deposit.id,
-            'WALLET_CREDITED',
-            {
-                usdAmount: deposit.usd_amount,
-                kesAmount: deposit.kes_amount,
-                balanceBefore,
-                balanceAfter,
-                trackingId: orderTrackingId
-            },
-            true
-        );
-
-        await client.query('COMMIT');
 
         return {
             status: 'COMPLETED',
-            credited: true,
-            amountUSD: money(deposit.usd_amount),
-            balance: balanceAfter
+            balance: after
         };
-
-    } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-    } finally {
-        client.release();
-    }
+    });
 }
 
-// ------------------------------------------------------------
-// PESAPAL IPN NOTIFICATION
-// ------------------------------------------------------------
+// ============================================================
+// PESAPAL IPN
+// ============================================================
 
 async function handlePesapalIPN(req, res) {
-    const orderTrackingId =
-        req.body?.OrderTrackingId ||
-        req.query.OrderTrackingId;
+    const trackingId =
+        req.body?.OrderTrackingId || req.query.OrderTrackingId;
 
     const merchantReference =
         req.body?.OrderMerchantReference ||
         req.query.OrderMerchantReference;
 
-    if (!orderTrackingId || !merchantReference) {
+    if (!trackingId || !merchantReference) {
         return res.status(400).json({
-            error: 'Missing Pesapal notification information.'
+            error: 'Missing payment notification details.'
         });
     }
 
     try {
-        await verifyAndCreditDeposit(
-            orderTrackingId,
-            merchantReference
-        );
+        await verifyAndCreditDeposit(trackingId, merchantReference);
 
-        // Pesapal expects an acknowledgement response.
         return res.json({
             orderNotificationType:
                 req.body?.OrderNotificationType ||
                 req.query.OrderNotificationType ||
                 'IPNCHANGE',
-            orderTrackingId,
+            orderTrackingId: trackingId,
             orderMerchantReference: merchantReference,
             status: 200
         });
-
     } catch (error) {
-        console.error('Pesapal IPN processing error:', error.message);
+        console.error('Pesapal IPN error:', error.message);
 
         return res.status(500).json({
             orderNotificationType: 'IPNCHANGE',
-            orderTrackingId,
+            orderTrackingId: trackingId,
             orderMerchantReference: merchantReference,
             status: 500
         });
@@ -1697,244 +1629,211 @@ async function handlePesapalIPN(req, res) {
 app.get('/api/payments/pesapal/ipn', handlePesapalIPN);
 app.post('/api/payments/pesapal/ipn', handlePesapalIPN);
 
-// ------------------------------------------------------------
-// PESAPAL CUSTOMER CALLBACK
-// ------------------------------------------------------------
+// ============================================================
+// PESAPAL CALLBACK
+// ============================================================
 
 app.get(
     '/api/payments/pesapal/callback',
     asyncHandler(async (req, res) => {
-        const orderTrackingId = req.query.OrderTrackingId;
+        const trackingId = req.query.OrderTrackingId;
         const merchantReference = req.query.OrderMerchantReference;
 
-        if (!orderTrackingId || !merchantReference) {
+        if (!trackingId || !merchantReference) {
             return res.status(400).send(
                 'Payment reference information is missing.'
             );
         }
 
+        let result;
+
         try {
-            const result = await verifyAndCreditDeposit(
-                orderTrackingId,
+            result = await verifyAndCreditDeposit(
+                trackingId,
                 merchantReference
             );
-
-            // Replace this with the actual customer frontend URL
-            // when the frontend deployment address is available.
-            const frontendUrl =
-                process.env.FRONTEND_URL || '';
-
-            if (frontendUrl) {
-                const redirect = new URL(
-                    '/payment-result',
-                    frontendUrl
-                );
-
-                redirect.searchParams.set(
-                    'reference',
-                    merchantReference
-                );
-
-                redirect.searchParams.set(
-                    'status',
-                    result.status || 'PROCESSING'
-                );
-
-                return res.redirect(redirect.toString());
-            }
-
-            return res.json({
-                message: 'Payment status checked.',
-                reference: merchantReference,
-                result
-            });
-
         } catch (error) {
             console.error('Pesapal callback error:', error.message);
-
-            return res.status(500).json({
-                error: 'Unable to verify payment. Contact support.'
-            });
-        }
-    })
-);
-
-// ------------------------------------------------------------
-// CUSTOMER CHECK DEPOSIT STATUS
-// ------------------------------------------------------------
-
-app.get(
-    '/api/cashier/status/:reference',
-    auth,
-    asyncHandler(async (req, res) => {
-        const reference = req.params.reference;
-
-        const result = await db.query(
-            `SELECT
-                id,
-                reference,
-                usd_amount,
-                kes_amount,
-                exchange_rate,
-                phone,
-                status,
-                provider_status,
-                credited_at,
-                created_at
-             FROM deposits
-             WHERE reference = $1
-               AND user_id = $2`,
-            [reference, req.user.id]
-        );
-
-        if (!result.rows.length) {
-            return res.status(404).json({
-                error: 'Deposit not found.'
-            });
+            result = { status: 'PROCESSING' };
         }
 
-        const deposit = result.rows[0];
+        const frontendUrl = process.env.FRONTEND_URL;
 
-        // If the payment has not completed, refresh its status
-        // from Pesapal rather than trusting the browser.
-
-        if (
-            deposit.status !== 'COMPLETED' &&
-            deposit.status !== 'FAILED' &&
-            deposit.status !== 'CANCELLED'
-        ) {
-            const trackingResult = await db.query(
-                `SELECT pesapal_tracking_id
-                 FROM deposits
-                 WHERE reference = $1`,
-                [reference]
-            );
-
-            const trackingId =
-                trackingResult.rows[0]?.pesapal_tracking_id;
-
-            if (trackingId) {
-                try {
-                    await verifyAndCreditDeposit(
-                        trackingId,
-                        reference
-                    );
-                } catch (error) {
-                    console.error(
-                        'Deposit status refresh failed:',
-                        error.message
-                    );
-                }
-            }
+        if (frontendUrl) {
+            const redirect = new URL('/payment-result', frontendUrl);
+            redirect.searchParams.set('reference', merchantReference);
+            redirect.searchParams.set('status', result.status);
+            return res.redirect(redirect.toString());
         }
-
-        const refreshed = await db.query(
-            `SELECT
-                reference,
-                usd_amount,
-                kes_amount,
-                exchange_rate,
-                status,
-                provider_status,
-                credited_at,
-                created_at
-             FROM deposits
-             WHERE reference = $1
-               AND user_id = $2`,
-            [reference, req.user.id]
-        );
 
         res.json({
-            deposit: refreshed.rows[0]
+            message: 'Payment callback received.',
+            reference: merchantReference,
+            status: result.status
         });
     })
 );
 
 // ============================================================
-// END OF PART 2
-// ============================================================
-// ============================================================
-// PART 3: WITHDRAWALS AND MANUAL M-PESA PAYMENTS
+// CUSTOMER DEPOSIT STATUS
 // ============================================================
 
-// ------------------------------------------------------------
-// CUSTOMER REQUESTS A WITHDRAWAL
-// ------------------------------------------------------------
-
-app.post(
-    '/api/cashier/withdraw',
-    auth,
+app.get(
+    '/api/cashier/status/:reference',
+    customerAuth,
     asyncHandler(async (req, res) => {
-        const amount = Number(
-            req.body.amount ?? req.body.usdAmount
+        const referenceValue = req.params.reference;
+
+        const result = await db.query(
+            `SELECT *
+             FROM deposits
+             WHERE reference = $1 AND user_id = $2`,
+            [referenceValue, req.user.id]
         );
 
-        const phone = String(
-            req.body.phone || req.body.phoneNumber || ''
-        ).trim();
+        const deposit = result.rows[0];
 
-        if (
-            !Number.isFinite(amount) ||
-            amount < MIN_WITHDRAWAL ||
-            amount > 100000
-        ) {
-            return res.status(400).json({
-                error: `Minimum withdrawal amount is $${MIN_WITHDRAWAL}.`
+        if (!deposit) {
+            return res.status(404).json({
+                error: 'Deposit not found.'
             });
         }
 
-        if (!/^\+?[0-9]{9,15}$/.test(phone)) {
+        if (deposit.pesapal_tracking_id &&
+            deposit.status !== 'COMPLETED' &&
+            deposit.status !== 'FAILED') {
+            try {
+                await verifyAndCreditDeposit(
+                    deposit.pesapal_tracking_id,
+                    deposit.reference
+                );
+            } catch (error) {
+                console.error('Deposit refresh error:', error.message);
+            }
+        }
+
+        const refreshed = await db.query(
+            `SELECT *
+             FROM deposits
+             WHERE reference = $1 AND user_id = $2`,
+            [referenceValue, req.user.id]
+        );
+
+        const item = refreshed.rows[0];
+
+        res.json({
+            status: item.status,
+            reference: item.reference,
+            deposit: {
+                reference: item.reference,
+                amount: money(item.usd_amount),
+                amountKES: money(item.kes_amount),
+                status: item.status,
+                providerStatus: item.provider_status,
+                createdAt: item.created_at,
+                creditedAt: item.credited_at
+            },
+            transaction: {
+                reference: item.reference,
+                status: item.status
+            }
+        });
+    })
+);
+
+// ============================================================
+// CUSTOMER KYC
+// ============================================================
+
+app.post(
+    '/api/account/kyc',
+    customerAuth,
+    asyncHandler(async (req, res) => {
+        const result = await db.query(
+            `UPDATE users
+             SET kyc_status = 'pending_review',
+                 updated_at = NOW()
+             WHERE id = $1
+               AND kyc_status IN ('unverified','rejected')
+             RETURNING id, kyc_status`,
+            [req.user.id]
+        );
+
+        if (!result.rows.length) {
+            const current = await db.query(
+                `SELECT kyc_status
+                 FROM users WHERE id = $1`,
+                [req.user.id]
+            );
+
+            return res.json({
+                message: 'KYC status unchanged.',
+                kycStatus: current.rows[0]?.kyc_status
+            });
+        }
+
+        res.json({
+            message: 'KYC submitted for review.',
+            kycStatus: result.rows[0].kyc_status
+        });
+    })
+);
+
+// ============================================================
+// CUSTOMER WITHDRAWAL
+// ============================================================
+
+app.post(
+    '/api/cashier/withdraw',
+    customerAuth,
+    asyncHandler(async (req, res) => {
+        const amount = Number(req.body.amount ?? req.body.usdAmount);
+
+        if (!Number.isFinite(amount) ||
+            amount < MIN_WITHDRAWAL ||
+            amount > 100000) {
+            return res.status(400).json({
+                error: `Minimum withdrawal is $${MIN_WITHDRAWAL}.`
+            });
+        }
+
+        const userResult = await db.query(
+            `SELECT phone FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+
+        const phone = normalizePhone(
+            req.body.phone || req.body.phoneNumber ||
+            userResult.rows[0]?.phone
+        );
+
+        if (!validPhone(phone)) {
             return res.status(400).json({
                 error: 'Enter a valid M-Pesa phone number.'
             });
         }
 
         const kesAmount = money(amount * KES_PER_USD);
-        const client = await db.pool.connect();
+        const withdrawalReference = reference('GTNWTH');
 
-        try {
-            await client.query('BEGIN');
-
-            const userResult = await client.query(
-                `SELECT id, account_status
-                 FROM users
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [req.user.id]
-            );
-
-            if (
-                !userResult.rows.length ||
-                userResult.rows[0].account_status !== 'ACTIVE'
-            ) {
-                throw new Error('Your account is unavailable.');
-            }
-
+        const withdrawal = await withTransaction(async client => {
             const wallet = await getWallet(
                 client,
                 req.user.id,
                 'LIVE'
             );
 
-            if (!wallet) {
-                throw new Error('LIVE wallet not found.');
-            }
+            if (!wallet) throw new Error('LIVE wallet not found.');
 
-            const balanceBefore = money(wallet.balance);
+            const before = money(wallet.balance);
             const reservedBefore = money(wallet.reserved_balance);
 
-            if (balanceBefore < amount) {
+            if (before < amount) {
                 throw new Error('Insufficient available balance.');
             }
 
-            const balanceAfter = money(balanceBefore - amount);
+            const after = money(before - amount);
             const reservedAfter = money(reservedBefore + amount);
-
-            const reference = makeReference('GTNWTH');
-
-            // Move the money into reserved balance.
-            // It cannot be used for trading while withdrawal
-            // approval is pending.
 
             await client.query(
                 `UPDATE wallets
@@ -1942,11 +1841,7 @@ app.post(
                      reserved_balance = $2,
                      updated_at = NOW()
                  WHERE id = $3`,
-                [
-                    balanceAfter,
-                    reservedAfter,
-                    wallet.id
-                ]
+                [after, reservedAfter, wallet.id]
             );
 
             const transaction = await insertTransaction(client, {
@@ -1955,29 +1850,24 @@ app.post(
                 type: 'WITHDRAWAL',
                 amount,
                 status: 'PENDING',
-                reference,
-                description: 'Customer withdrawal request'
+                reference: withdrawalReference,
+                provider: 'MANUAL_MPESA',
+                description: 'Manual M-Pesa withdrawal request'
             });
 
-            const withdrawalResult = await client.query(
+            const inserted = await client.query(
                 `INSERT INTO withdrawals (
-                    user_id,
-                    wallet_id,
-                    transaction_id,
-                    reference,
-                    amount,
-                    kes_amount,
-                    exchange_rate,
-                    phone,
-                    status
-                )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'PENDING')
-                RETURNING *`,
+                    user_id, wallet_id, transaction_id,
+                    reference, amount, kes_amount,
+                    exchange_rate, phone, status
+                 )
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'PENDING')
+                 RETURNING *`,
                 [
                     req.user.id,
                     wallet.id,
                     transaction.id,
-                    reference,
+                    withdrawalReference,
                     amount,
                     kesAmount,
                     KES_PER_USD,
@@ -1985,36 +1875,32 @@ app.post(
                 ]
             );
 
-            const withdrawal = withdrawalResult.rows[0];
+            const row = inserted.rows[0];
 
             await insertLedger(client, {
                 walletId: wallet.id,
                 userId: req.user.id,
                 entryType: 'WITHDRAWAL_RESERVE',
+                reference: withdrawalReference,
+                idempotencyKey: `WITHDRAWAL_RESERVE_${row.id}`,
                 amount: -amount,
-                balanceBefore,
-                balanceAfter,
+                balanceBefore: before,
+                balanceAfter: after,
                 reservedBefore,
                 reservedAfter,
-                reference,
-                idempotencyKey:
-                    `WITHDRAWAL_RESERVE_${withdrawal.id}`,
-                description: 'Funds reserved for withdrawal'
+                description: 'Withdrawal funds reserved'
             });
 
             await client.query(
                 `INSERT INTO payment_logs (
-                    withdrawal_id,
-                    provider,
-                    event_type,
-                    payload,
-                    processed
-                )
-                VALUES ($1,'MANUAL_MPESA','WITHDRAWAL_CREATED',$2,true)`,
+                    withdrawal_id, provider, event_type,
+                    payload, processed
+                 )
+                 VALUES ($1,'MANUAL_MPESA','WITHDRAWAL_CREATED',$2,true)`,
                 [
-                    withdrawal.id,
+                    row.id,
                     JSON.stringify({
-                        reference,
+                        reference: withdrawalReference,
                         amount,
                         kesAmount,
                         phone
@@ -2022,58 +1908,48 @@ app.post(
                 ]
             );
 
-            await client.query('COMMIT');
+            return {
+                row,
+                balance: after,
+                reservedBalance: reservedAfter
+            };
+        });
 
-            res.status(201).json({
-                message: 'Withdrawal request submitted successfully.',
-                withdrawal: {
-                    id: withdrawal.id,
-                    reference: withdrawal.reference,
-                    amount: money(withdrawal.amount),
-                    kesAmount: money(withdrawal.kes_amount),
-                    phone: withdrawal.phone,
-                    status: withdrawal.status,
-                    createdAt: withdrawal.created_at
-                },
-                wallet: {
-                    balance: balanceAfter,
-                    reservedBalance: reservedAfter
-                }
-            });
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            res.status(400).json({
-                error: error.message || 'Unable to submit withdrawal.'
-            });
-        } finally {
-            client.release();
-        }
+        res.status(201).json({
+            message: 'Withdrawal request submitted.',
+            transaction: {
+                id: withdrawal.row.id,
+                reference: withdrawal.row.reference,
+                amount: money(withdrawal.row.amount),
+                status: withdrawal.row.status
+            },
+            withdrawal: {
+                id: withdrawal.row.id,
+                reference: withdrawal.row.reference,
+                amount: money(withdrawal.row.amount),
+                kesAmount: money(withdrawal.row.kes_amount),
+                phone: withdrawal.row.phone,
+                status: withdrawal.row.status,
+                createdAt: withdrawal.row.created_at
+            },
+            wallet: {
+                balance: withdrawal.balance,
+                reservedBalance: withdrawal.reservedBalance
+            }
+        });
     })
 );
 
-// ------------------------------------------------------------
+// ============================================================
 // CUSTOMER WITHDRAWAL HISTORY
-// ------------------------------------------------------------
+// ============================================================
 
 app.get(
     '/api/cashier/withdrawals',
-    auth,
+    customerAuth,
     asyncHandler(async (req, res) => {
         const result = await db.query(
-            `SELECT
-                id,
-                reference,
-                amount,
-                kes_amount,
-                exchange_rate,
-                phone,
-                status,
-                admin_note,
-                created_at,
-                reviewed_at,
-                paid_at
+            `SELECT *
              FROM withdrawals
              WHERE user_id = $1
              ORDER BY created_at DESC
@@ -2082,669 +1958,23 @@ app.get(
         );
 
         res.json({
-            withdrawals: result.rows.map(item => ({
-                ...item,
-                amount: money(item.amount),
-                kes_amount: money(item.kes_amount)
+            withdrawals: result.rows.map(row => ({
+                ...row,
+                amount: money(row.amount),
+                kes_amount: money(row.kes_amount)
             }))
         });
     })
 );
 
-// ------------------------------------------------------------
-// CUSTOMER CHECKS ONE WITHDRAWAL
-// ------------------------------------------------------------
-
-app.get(
-    '/api/cashier/withdrawals/:reference',
-    auth,
-    asyncHandler(async (req, res) => {
-        const result = await db.query(
-            `SELECT
-                reference,
-                amount,
-                kes_amount,
-                phone,
-                status,
-                admin_note,
-                created_at,
-                reviewed_at,
-                paid_at
-             FROM withdrawals
-             WHERE reference = $1
-               AND user_id = $2`,
-            [
-                req.params.reference,
-                req.user.id
-            ]
-        );
-
-        if (!result.rows.length) {
-            return res.status(404).json({
-                error: 'Withdrawal request not found.'
-            });
-        }
-
-        res.json({
-            withdrawal: result.rows[0]
-        });
-    })
-);
-
 // ============================================================
-// ADMIN WITHDRAWAL MANAGEMENT
-// ============================================================
-
-// ------------------------------------------------------------
-// ADMIN: LIST WITHDRAWALS
-// ------------------------------------------------------------
-
-app.get(
-    '/api/admin/withdrawals',
-    adminAuth,
-    asyncHandler(async (req, res) => {
-        const status = String(
-            req.query.status || ''
-        ).toUpperCase();
-
-        const allowedStatuses = [
-            'PENDING',
-            'APPROVED',
-            'REJECTED',
-            'PROCESSING',
-            'PAID',
-            'FAILED',
-            'CANCELLED'
-        ];
-
-        let query = `
-            SELECT
-                w.*,
-                u.full_name,
-                u.email,
-                u.phone AS customer_phone
-            FROM withdrawals w
-            JOIN users u ON u.id = w.user_id
-        `;
-
-        const params = [];
-
-        if (status) {
-            if (!allowedStatuses.includes(status)) {
-                return res.status(400).json({
-                    error: 'Invalid withdrawal status.'
-                });
-            }
-
-            query += ' WHERE w.status = $1';
-            params.push(status);
-        }
-
-        query += ' ORDER BY w.created_at DESC LIMIT 500';
-
-        const result = await db.query(query, params);
-
-        res.json({
-            withdrawals: result.rows.map(item => ({
-                ...item,
-                amount: money(item.amount),
-                kes_amount: money(item.kes_amount)
-            }))
-        });
-    })
-);
-
-// ------------------------------------------------------------
-// ADMIN: APPROVE WITHDRAWAL
-// ------------------------------------------------------------
-
-app.post(
-    '/api/admin/withdrawals/:id/approve',
-    adminAuth,
-    asyncHandler(async (req, res) => {
-        const client = await db.pool.connect();
-
-        try {
-            await client.query('BEGIN');
-
-            const result = await client.query(
-                `SELECT *
-                 FROM withdrawals
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [req.params.id]
-            );
-
-            if (!result.rows.length) {
-                throw new Error('Withdrawal not found.');
-            }
-
-            const withdrawal = result.rows[0];
-
-            if (withdrawal.status !== 'PENDING') {
-                throw new Error(
-                    'Only pending withdrawals can be approved.'
-                );
-            }
-
-            await client.query(
-                `UPDATE withdrawals
-                 SET status = 'APPROVED',
-                     reviewed_by = $1,
-                     reviewed_at = NOW(),
-                     admin_note = $2
-                 WHERE id = $3`,
-                [
-                    req.admin.id,
-                    req.body.note || 'Withdrawal approved.',
-                    withdrawal.id
-                ]
-            );
-
-            await client.query(
-                `UPDATE transactions
-                 SET status = 'PROCESSING'
-                 WHERE id = $1`,
-                [withdrawal.transaction_id]
-            );
-
-            await logAdminAction(
-                client,
-                req.admin.id,
-                'APPROVE_WITHDRAWAL',
-                'WITHDRAWAL',
-                withdrawal.id,
-                {
-                    reference: withdrawal.reference,
-                    amount: withdrawal.amount,
-                    kesAmount: withdrawal.kes_amount,
-                    note: req.body.note || ''
-                }
-            );
-
-            await client.query(
-                `INSERT INTO payment_logs (
-                    withdrawal_id,
-                    provider,
-                    event_type,
-                    payload,
-                    processed
-                )
-                VALUES ($1,'MANUAL_MPESA','WITHDRAWAL_APPROVED',$2,true)`,
-                [
-                    withdrawal.id,
-                    JSON.stringify({
-                        adminId: req.admin.id,
-                        note: req.body.note || ''
-                    })
-                ]
-            );
-
-            await client.query('COMMIT');
-
-            res.json({
-                message: 'Withdrawal approved.',
-                reference: withdrawal.reference,
-                status: 'APPROVED'
-            });
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            res.status(400).json({
-                error: error.message
-            });
-        } finally {
-            client.release();
-        }
-    })
-);
-
-// ------------------------------------------------------------
-// ADMIN: REJECT WITHDRAWAL AND RELEASE RESERVED FUNDS
-// ------------------------------------------------------------
-
-app.post(
-    '/api/admin/withdrawals/:id/reject',
-    adminAuth,
-    asyncHandler(async (req, res) => {
-        const note = String(
-            req.body.note || ''
-        ).trim();
-
-        if (note.length < 3) {
-            return res.status(400).json({
-                error: 'Provide a reason for rejecting the withdrawal.'
-            });
-        }
-
-        const client = await db.pool.connect();
-
-        try {
-            await client.query('BEGIN');
-
-            const result = await client.query(
-                `SELECT *
-                 FROM withdrawals
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [req.params.id]
-            );
-
-            if (!result.rows.length) {
-                throw new Error('Withdrawal not found.');
-            }
-
-            const withdrawal = result.rows[0];
-
-            if (withdrawal.status !== 'PENDING') {
-                throw new Error(
-                    'Only pending withdrawals can be rejected.'
-                );
-            }
-
-            const walletResult = await client.query(
-                `SELECT *
-                 FROM wallets
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [withdrawal.wallet_id]
-            );
-
-            if (!walletResult.rows.length) {
-                throw new Error('Customer wallet not found.');
-            }
-
-            const wallet = walletResult.rows[0];
-
-            const amount = money(withdrawal.amount);
-
-            const balanceBefore = money(wallet.balance);
-            const reservedBefore = money(wallet.reserved_balance);
-
-            if (reservedBefore < amount) {
-                throw new Error(
-                    'Reserved wallet balance is inconsistent. Manual investigation required.'
-                );
-            }
-
-            const balanceAfter = money(balanceBefore + amount);
-            const reservedAfter = money(reservedBefore - amount);
-
-            await client.query(
-                `UPDATE wallets
-                 SET balance = $1,
-                     reserved_balance = $2,
-                     updated_at = NOW()
-                 WHERE id = $3`,
-                [
-                    balanceAfter,
-                    reservedAfter,
-                    wallet.id
-                ]
-            );
-
-            await client.query(
-                `UPDATE withdrawals
-                 SET status = 'REJECTED',
-                     reviewed_by = $1,
-                     reviewed_at = NOW(),
-                     admin_note = $2
-                 WHERE id = $3`,
-                [
-                    req.admin.id,
-                    note,
-                    withdrawal.id
-                ]
-            );
-
-            await client.query(
-                `UPDATE transactions
-                 SET status = 'REJECTED'
-                 WHERE id = $1`,
-                [withdrawal.transaction_id]
-            );
-
-            await insertLedger(client, {
-                walletId: wallet.id,
-                userId: withdrawal.user_id,
-                entryType: 'WITHDRAWAL_RELEASE',
-                amount,
-                balanceBefore,
-                balanceAfter,
-                reservedBefore,
-                reservedAfter,
-                reference: withdrawal.reference,
-                idempotencyKey:
-                    `WITHDRAWAL_RELEASE_${withdrawal.id}`,
-                description: 'Rejected withdrawal funds released'
-            });
-
-            await logAdminAction(
-                client,
-                req.admin.id,
-                'REJECT_WITHDRAWAL',
-                'WITHDRAWAL',
-                withdrawal.id,
-                {
-                    reference: withdrawal.reference,
-                    amount,
-                    note
-                }
-            );
-
-            await client.query(
-                `INSERT INTO payment_logs (
-                    withdrawal_id,
-                    provider,
-                    event_type,
-                    payload,
-                    processed
-                )
-                VALUES ($1,'MANUAL_MPESA','WITHDRAWAL_REJECTED',$2,true)`,
-                [
-                    withdrawal.id,
-                    JSON.stringify({
-                        adminId: req.admin.id,
-                        note
-                    })
-                ]
-            );
-
-            await client.query('COMMIT');
-
-            res.json({
-                message: 'Withdrawal rejected. Funds returned to customer wallet.',
-                reference: withdrawal.reference,
-                balance: balanceAfter,
-                reservedBalance: reservedAfter
-            });
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            res.status(400).json({
-                error: error.message
-            });
-        } finally {
-            client.release();
-        }
-    })
-);
-
-// ------------------------------------------------------------
-// ADMIN: MARK WITHDRAWAL AS PROCESSING
-// ------------------------------------------------------------
-
-app.post(
-    '/api/admin/withdrawals/:id/processing',
-    adminAuth,
-    asyncHandler(async (req, res) => {
-        const client = await db.pool.connect();
-
-        try {
-            await client.query('BEGIN');
-
-            const result = await client.query(
-                `SELECT *
-                 FROM withdrawals
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [req.params.id]
-            );
-
-            if (!result.rows.length) {
-                throw new Error('Withdrawal not found.');
-            }
-
-            const withdrawal = result.rows[0];
-
-            if (withdrawal.status !== 'APPROVED') {
-                throw new Error(
-                    'Only approved withdrawals can be marked processing.'
-                );
-            }
-
-            await client.query(
-                `UPDATE withdrawals
-                 SET status = 'PROCESSING',
-                     admin_note = $1
-                 WHERE id = $2`,
-                [
-                    req.body.note || 'M-Pesa payment being processed.',
-                    withdrawal.id
-                ]
-            );
-
-            await logAdminAction(
-                client,
-                req.admin.id,
-                'PROCESS_WITHDRAWAL',
-                'WITHDRAWAL',
-                withdrawal.id,
-                {
-                    reference: withdrawal.reference
-                }
-            );
-
-            await client.query('COMMIT');
-
-            res.json({
-                message: 'Withdrawal marked as processing.',
-                status: 'PROCESSING'
-            });
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            res.status(400).json({
-                error: error.message
-            });
-        } finally {
-            client.release();
-        }
-    })
-);
-
-// ------------------------------------------------------------
-// ADMIN: CONFIRM MANUAL M-PESA PAYMENT
-// ------------------------------------------------------------
-
-app.post(
-    '/api/admin/withdrawals/:id/paid',
-    adminAuth,
-    asyncHandler(async (req, res) => {
-        const mpesaReference = String(
-            req.body.mpesaReference || ''
-        ).trim();
-
-        if (!mpesaReference) {
-            return res.status(400).json({
-                error: 'Enter the M-Pesa transaction reference.'
-            });
-        }
-
-        const client = await db.pool.connect();
-
-        try {
-            await client.query('BEGIN');
-
-            const result = await client.query(
-                `SELECT *
-                 FROM withdrawals
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [req.params.id]
-            );
-
-            if (!result.rows.length) {
-                throw new Error('Withdrawal not found.');
-            }
-
-            const withdrawal = result.rows[0];
-
-            if (
-                !['APPROVED', 'PROCESSING'].includes(
-                    withdrawal.status
-                )
-            ) {
-                throw new Error(
-                    'Only approved or processing withdrawals can be marked paid.'
-                );
-            }
-
-            const walletResult = await client.query(
-                `SELECT *
-                 FROM wallets
-                 WHERE id = $1
-                 FOR UPDATE`,
-                [withdrawal.wallet_id]
-            );
-
-            if (!walletResult.rows.length) {
-                throw new Error('Customer wallet not found.');
-            }
-
-            const wallet = walletResult.rows[0];
-
-            const amount = money(withdrawal.amount);
-
-            const balanceBefore = money(wallet.balance);
-            const reservedBefore = money(wallet.reserved_balance);
-
-            if (reservedBefore < amount) {
-                throw new Error(
-                    'Reserved wallet balance is inconsistent. Payment cannot be completed.'
-                );
-            }
-
-            const balanceAfter = balanceBefore;
-            const reservedAfter = money(reservedBefore - amount);
-
-            // The funds are removed from reserved balance.
-            // No customer balance is credited here because
-            // the money has already been sent externally.
-
-            await client.query(
-                `UPDATE wallets
-                 SET reserved_balance = $1,
-                     updated_at = NOW()
-                 WHERE id = $2`,
-                [
-                    reservedAfter,
-                    wallet.id
-                ]
-            );
-
-            await client.query(
-                `UPDATE withdrawals
-                 SET status = 'PAID',
-                     reviewed_by = $1,
-                     reviewed_at = COALESCE(reviewed_at, NOW()),
-                     paid_at = NOW(),
-                     admin_note = $2
-                 WHERE id = $3`,
-                [
-                    req.admin.id,
-                    `M-Pesa reference: ${mpesaReference}`,
-                    withdrawal.id
-                ]
-            );
-
-            await client.query(
-                `UPDATE transactions
-                 SET status = 'COMPLETED'
-                 WHERE id = $1`,
-                [withdrawal.transaction_id]
-            );
-
-            await insertLedger(client, {
-                walletId: wallet.id,
-                userId: withdrawal.user_id,
-                entryType: 'WITHDRAWAL_PAID',
-                amount: -amount,
-                balanceBefore,
-                balanceAfter,
-                reservedBefore,
-                reservedAfter,
-                reference: withdrawal.reference,
-                idempotencyKey:
-                    `WITHDRAWAL_PAID_${withdrawal.id}`,
-                description: `Manual M-Pesa payout ${mpesaReference}`
-            });
-
-            await logAdminAction(
-                client,
-                req.admin.id,
-                'MARK_WITHDRAWAL_PAID',
-                'WITHDRAWAL',
-                withdrawal.id,
-                {
-                    reference: withdrawal.reference,
-                    amount,
-                    kesAmount: withdrawal.kes_amount,
-                    mpesaReference
-                }
-            );
-
-            await client.query(
-                `INSERT INTO payment_logs (
-                    withdrawal_id,
-                    provider,
-                    event_type,
-                    payload,
-                    processed
-                )
-                VALUES ($1,'MANUAL_MPESA','WITHDRAWAL_PAID',$2,true)`,
-                [
-                    withdrawal.id,
-                    JSON.stringify({
-                        adminId: req.admin.id,
-                        mpesaReference,
-                        amount,
-                        kesAmount: withdrawal.kes_amount
-                    })
-                ]
-            );
-
-            await client.query('COMMIT');
-
-            res.json({
-                message: 'Withdrawal successfully marked as paid.',
-                reference: withdrawal.reference,
-                mpesaReference,
-                status: 'PAID',
-                wallet: {
-                    balance: balanceAfter,
-                    reservedBalance: reservedAfter
-                }
-            });
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            res.status(400).json({
-                error: error.message
-            });
-        } finally {
-            client.release();
-        }
-    })
-);
-
-// ============================================================
-// END OF PART 3
-// ============================================================
-// ============================================================
-// PART 4: ADMINISTRATION AND SERVER CONFIGURATION
-// ============================================================
-
-// ------------------------------------------------------------
 // ADMIN LOGIN
-// ------------------------------------------------------------
+// ============================================================
 
 app.post('/api/admin/login', asyncHandler(async (req, res) => {
-    const email = String(req.body.email || '').trim().toLowerCase();
+    const email = String(req.body.email || '')
+        .trim().toLowerCase();
+
     const password = String(req.body.password || '');
 
     if (!email || !password) {
@@ -2754,50 +1984,23 @@ app.post('/api/admin/login', asyncHandler(async (req, res) => {
     }
 
     const result = await db.query(
-        `SELECT id, email, password_hash, role, active
-         FROM admins
-         WHERE email = $1`,
+        `SELECT * FROM admins WHERE email = $1`,
         [email]
     );
 
-    if (!result.rows.length) {
-        return res.status(401).json({
-            error: 'Invalid administrator credentials.'
-        });
-    }
-
     const admin = result.rows[0];
 
-    if (!admin.active) {
-        return res.status(403).json({
-            error: 'Administrator account is disabled.'
-        });
-    }
-
-    const validPassword = await bcrypt.compare(
-        password,
-        admin.password_hash
-    );
-
-    if (!validPassword) {
+    if (!admin ||
+        !admin.active ||
+        !(await bcrypt.compare(password, admin.password_hash))) {
         return res.status(401).json({
             error: 'Invalid administrator credentials.'
         });
     }
 
-    const token = jwt.sign(
-        {
-            id: admin.id,
-            email: admin.email,
-            role: admin.role
-        },
-        JWT_SECRET,
-        { expiresIn: '8h' }
-    );
-
     res.json({
-        message: 'Administrator login successful.',
-        token,
+        message: 'Admin login successful.',
+        token: signAdmin(admin),
         admin: {
             id: admin.id,
             email: admin.email,
@@ -2806,35 +2009,12 @@ app.post('/api/admin/login', asyncHandler(async (req, res) => {
     });
 }));
 
-// ------------------------------------------------------------
-// ADMIN PROFILE
-// ------------------------------------------------------------
-
-app.get('/api/admin/me', adminAuth, asyncHandler(async (req, res) => {
-    const result = await db.query(
-        `SELECT id, email, role, active, created_at
-         FROM admins
-         WHERE id = $1`,
-        [req.admin.id]
-    );
-
-    if (!result.rows.length || !result.rows[0].active) {
-        return res.status(401).json({
-            error: 'Administrator account unavailable.'
-        });
-    }
-
-    res.json({
-        admin: result.rows[0]
-    });
-}));
-
-// ------------------------------------------------------------
-// ADMIN DASHBOARD OVERVIEW
-// ------------------------------------------------------------
+// ============================================================
+// ADMIN OVERVIEW
+// ============================================================
 
 app.get(
-    '/api/admin/dashboard',
+    '/api/admin/overview',
     adminAuth,
     asyncHandler(async (req, res) => {
         const [
@@ -2846,47 +2026,36 @@ app.get(
         ] = await Promise.all([
             db.query(`
                 SELECT
-                    COUNT(*) AS total_customers,
+                    COUNT(*) AS total,
                     COUNT(*) FILTER (
                         WHERE account_status = 'ACTIVE'
-                    ) AS active_customers,
+                    ) AS active,
                     COUNT(*) FILTER (
                         WHERE account_status = 'SUSPENDED'
-                    ) AS suspended_customers
+                    ) AS suspended
                 FROM users
             `),
-
             db.query(`
                 SELECT
-                    COUNT(*) AS total_deposits,
+                    COUNT(*) AS total,
+                    COALESCE(SUM(usd_amount),0) AS total_usd,
                     COUNT(*) FILTER (
-                        WHERE status = 'PENDING'
-                    ) AS pending_deposits,
-                    COALESCE(
-                        SUM(usd_amount) FILTER (
-                            WHERE status = 'COMPLETED'
-                        ), 0
-                    ) AS completed_deposit_usd
+                        WHERE status = 'COMPLETED'
+                    ) AS completed
                 FROM deposits
             `),
-
             db.query(`
                 SELECT
-                    COUNT(*) AS total_withdrawals,
+                    COUNT(*) AS total,
+                    COALESCE(SUM(amount),0) AS total_usd,
                     COUNT(*) FILTER (
                         WHERE status = 'PENDING'
-                    ) AS pending_withdrawals,
-                    COALESCE(
-                        SUM(amount) FILTER (
-                            WHERE status = 'PAID'
-                        ), 0
-                    ) AS paid_withdrawal_usd
+                    ) AS pending
                 FROM withdrawals
             `),
-
             db.query(`
                 SELECT
-                    COUNT(*) AS total_trades,
+                    COUNT(*) AS total,
                     COUNT(*) FILTER (
                         WHERE status = 'OPEN'
                     ) AS open_trades,
@@ -2898,14 +2067,12 @@ app.get(
                     ) AS losing_trades
                 FROM trades
             `),
-
             db.query(`
                 SELECT
                     account_type,
                     COUNT(*) AS wallet_count,
-                    COALESCE(SUM(balance), 0) AS total_balance,
-                    COALESCE(SUM(reserved_balance), 0)
-                        AS total_reserved
+                    COALESCE(SUM(balance),0) AS total_balance,
+                    COALESCE(SUM(reserved_balance),0) AS total_reserved
                 FROM wallets
                 GROUP BY account_type
             `)
@@ -2921,9 +2088,9 @@ app.get(
     })
 );
 
-// ------------------------------------------------------------
-// ADMIN CUSTOMER SEARCH
-// ------------------------------------------------------------
+// ============================================================
+// ADMIN CUSTOMER LIST
+// ============================================================
 
 app.get(
     '/api/admin/users',
@@ -2937,17 +2104,13 @@ app.get(
             100
         );
 
-        const offset = Math.max(
-            Number(req.query.offset) || 0,
-            0
-        );
+        const offset = Math.max(Number(req.query.offset) || 0, 0);
 
-        const conditions = [];
         const params = [];
+        const conditions = [];
 
         if (search) {
             params.push(`%${search}%`);
-
             conditions.push(`
                 (
                     u.full_name ILIKE $${params.length}
@@ -2966,23 +2129,14 @@ app.get(
             }
 
             params.push(status);
-            conditions.push(
-                `u.account_status = $${params.length}`
-            );
+            conditions.push(`u.account_status = $${params.length}`);
         }
 
         let query = `
             SELECT
-                u.id,
-                u.full_name,
-                u.email,
-                u.phone,
-                u.country,
-                u.referral_code,
-                u.referrals_count,
-                u.kyc_status,
-                u.account_status,
-                u.created_at,
+                u.id, u.full_name, u.email, u.phone,
+                u.country, u.referral_code, u.referrals_count,
+                u.kyc_status, u.account_status, u.created_at,
                 COALESCE(
                     JSON_AGG(
                         JSON_BUILD_OBJECT(
@@ -3023,101 +2177,76 @@ app.get(
     })
 );
 
-// ------------------------------------------------------------
+// ============================================================
 // ADMIN CUSTOMER PROFILE
-// ------------------------------------------------------------
+// ============================================================
 
 app.get(
     '/api/admin/users/:id',
     adminAuth,
     asyncHandler(async (req, res) => {
-        const userResult = await db.query(
-            `SELECT
-                id,
-                full_name,
-                email,
-                phone,
-                country,
-                referral_code,
-                referrals_count,
-                referral_earnings,
-                kyc_status,
-                account_status,
-                created_at,
-                updated_at
-             FROM users
-             WHERE id = $1`,
-            [req.params.id]
-        );
+        const [user, wallets, transactions, trades] = await Promise.all([
+            db.query(
+                `SELECT id, full_name, email, phone, country,
+                        referral_code, referrals_count,
+                        referral_earnings, kyc_status,
+                        account_status, created_at, updated_at
+                 FROM users WHERE id = $1`,
+                [req.params.id]
+            ),
+            db.query(
+                `SELECT * FROM wallets WHERE user_id = $1`,
+                [req.params.id]
+            ),
+            db.query(
+                `SELECT * FROM transactions
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC LIMIT 50`,
+                [req.params.id]
+            ),
+            db.query(
+                `SELECT * FROM trades
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC LIMIT 50`,
+                [req.params.id]
+            )
+        ]);
 
-        if (!userResult.rows.length) {
+        if (!user.rows.length) {
             return res.status(404).json({
                 error: 'Customer not found.'
             });
         }
 
-        const [wallets, transactions, trades] = await Promise.all([
-            db.query(
-                `SELECT *
-                 FROM wallets
-                 WHERE user_id = $1`,
-                [req.params.id]
-            ),
-
-            db.query(
-                `SELECT *
-                 FROM transactions
-                 WHERE user_id = $1
-                 ORDER BY created_at DESC
-                 LIMIT 50`,
-                [req.params.id]
-            ),
-
-            db.query(
-                `SELECT *
-                 FROM trades
-                 WHERE user_id = $1
-                 ORDER BY created_at DESC
-                 LIMIT 50`,
-                [req.params.id]
-            )
-        ]);
-
         res.json({
-            user: userResult.rows[0],
+            user: user.rows[0],
             wallets: wallets.rows,
             transactions: transactions.rows,
-            trades: trades.rows
+            trades: trades.rows.map(tradeView)
         });
     })
 );
 
-// ------------------------------------------------------------
-// ADMIN SUSPEND CUSTOMER
-// ------------------------------------------------------------
+// ============================================================
+// ADMIN SUSPEND / REACTIVATE CUSTOMER
+// ============================================================
 
 app.post(
     '/api/admin/users/:id/suspend',
     adminAuth,
     asyncHandler(async (req, res) => {
-        const client = await db.pool.connect();
-
-        try {
-            await client.query('BEGIN');
-
-            const result = await client.query(
+        const result = await withTransaction(async client => {
+            const user = await client.query(
                 `SELECT id, account_status
-                 FROM users
-                 WHERE id = $1
-                 FOR UPDATE`,
+                 FROM users WHERE id = $1 FOR UPDATE`,
                 [req.params.id]
             );
 
-            if (!result.rows.length) {
+            if (!user.rows.length) {
                 throw new Error('Customer not found.');
             }
 
-            if (result.rows[0].account_status === 'SUSPENDED') {
+            if (user.rows[0].account_status === 'SUSPENDED') {
                 throw new Error('Customer is already suspended.');
             }
 
@@ -3130,52 +2259,32 @@ app.post(
             );
 
             await logAdminAction(
-                client,
-                req.admin.id,
-                'SUSPEND_CUSTOMER',
-                'USER',
-                req.params.id,
-                {
-                    reason: req.body.reason || 'No reason provided'
-                }
+                client, req.admin.id,
+                'SUSPEND_CUSTOMER', 'USER',
+                req.params.id
             );
 
-            await client.query('COMMIT');
+            return true;
+        });
 
-            res.json({
-                message: 'Customer suspended successfully.'
-            });
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            res.status(400).json({
-                error: error.message
-            });
-        } finally {
-            client.release();
-        }
+        res.json({
+            message: 'Customer suspended.',
+            success: result
+        });
     })
 );
 
-// ------------------------------------------------------------
-// ADMIN REACTIVATE CUSTOMER
-// ------------------------------------------------------------
-
 app.post(
-    '/api/admin/users/:id/reactivate',
+    '/api/admin/users/:id/activate',
     adminAuth,
     asyncHandler(async (req, res) => {
-        const client = await db.pool.connect();
-
-        try {
-            await client.query('BEGIN');
-
+        await withTransaction(async client => {
             const result = await client.query(
-                `SELECT id, account_status
-                 FROM users
+                `UPDATE users
+                 SET account_status = 'ACTIVE',
+                     updated_at = NOW()
                  WHERE id = $1
-                 FOR UPDATE`,
+                 RETURNING id`,
                 [req.params.id]
             );
 
@@ -3183,60 +2292,34 @@ app.post(
                 throw new Error('Customer not found.');
             }
 
-            await client.query(
-                `UPDATE users
-                 SET account_status = 'ACTIVE',
-                     updated_at = NOW()
-                 WHERE id = $1`,
-                [req.params.id]
-            );
-
             await logAdminAction(
-                client,
-                req.admin.id,
-                'REACTIVATE_CUSTOMER',
-                'USER',
-                req.params.id,
-                {}
+                client, req.admin.id,
+                'ACTIVATE_CUSTOMER', 'USER',
+                req.params.id
             );
+        });
 
-            await client.query('COMMIT');
-
-            res.json({
-                message: 'Customer reactivated successfully.'
-            });
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            res.status(400).json({
-                error: error.message
-            });
-        } finally {
-            client.release();
-        }
+        res.json({ message: 'Customer activated.' });
     })
 );
 
-// ------------------------------------------------------------
-// ADMIN WALLET BALANCE ADJUSTMENT
-// ------------------------------------------------------------
+// ============================================================
+// ADMIN WALLET ADJUSTMENT
+// ============================================================
 
 app.post(
     '/api/admin/wallets/:id/adjust',
     adminAuth,
     superAdminOnly,
     asyncHandler(async (req, res) => {
-        const amount = Number(req.body.amount);
+        const amount = money(req.body.amount);
         const reason = String(req.body.reason || '').trim();
 
-        if (
-            !Number.isFinite(amount) ||
+        if (!Number.isFinite(amount) ||
             amount === 0 ||
-            Math.abs(amount) > 1000000
-        ) {
+            Math.abs(amount) > 1000000) {
             return res.status(400).json({
-                error: 'Enter a valid non-zero adjustment amount.'
+                error: 'Enter a valid adjustment amount.'
             });
         }
 
@@ -3246,60 +2329,45 @@ app.post(
             });
         }
 
-        const client = await db.pool.connect();
-
-        try {
-            await client.query('BEGIN');
-
+        const result = await withTransaction(async client => {
             const walletResult = await client.query(
-                `SELECT *
-                 FROM wallets
-                 WHERE id = $1
-                 FOR UPDATE`,
+                `SELECT * FROM wallets
+                 WHERE id = $1 FOR UPDATE`,
                 [req.params.id]
             );
 
-            if (!walletResult.rows.length) {
-                throw new Error('Wallet not found.');
-            }
-
             const wallet = walletResult.rows[0];
 
-            const balanceBefore = money(wallet.balance);
-            const reservedBefore = money(wallet.reserved_balance);
+            if (!wallet) throw new Error('Wallet not found.');
 
-            const balanceAfter = money(balanceBefore + amount);
+            const before = money(wallet.balance);
+            const reserved = money(wallet.reserved_balance);
+            const after = money(before + amount);
 
-            if (balanceAfter < 0) {
-                throw new Error(
-                    'Adjustment would make wallet balance negative.'
-                );
+            if (after < 0) {
+                throw new Error('Adjustment would make balance negative.');
             }
 
-            const reference = makeReference('ADMINADJ');
+            const ref = reference('ADMINADJ');
 
             await client.query(
                 `UPDATE wallets
-                 SET balance = $1,
-                     updated_at = NOW()
+                 SET balance = $1, updated_at = NOW()
                  WHERE id = $2`,
-                [
-                    balanceAfter,
-                    wallet.id
-                ]
+                [after, wallet.id]
             );
 
             await insertLedger(client, {
                 walletId: wallet.id,
                 userId: wallet.user_id,
                 entryType: 'ADMIN_ADJUSTMENT',
+                reference: ref,
+                idempotencyKey: `ADMIN_ADJUSTMENT_${ref}`,
                 amount,
-                balanceBefore,
-                balanceAfter,
-                reservedBefore,
-                reservedAfter: reservedBefore,
-                reference,
-                idempotencyKey: reference,
+                balanceBefore: before,
+                balanceAfter: after,
+                reservedBefore: reserved,
+                reservedAfter: reserved,
                 description: reason
             });
 
@@ -3309,7 +2377,7 @@ app.post(
                 type: 'ADJUSTMENT',
                 amount: Math.abs(amount),
                 status: 'COMPLETED',
-                reference,
+                reference: ref,
                 description: reason
             });
 
@@ -3319,125 +2387,461 @@ app.post(
                 'WALLET_ADJUSTMENT',
                 'WALLET',
                 wallet.id,
-                {
-                    userId: wallet.user_id,
-                    amount,
-                    reason,
-                    balanceBefore,
-                    balanceAfter
-                }
+                { amount, reason, before, after }
             );
 
-            await client.query('COMMIT');
+            return { balance: after, reference: ref };
+        });
 
-            res.json({
-                message: 'Wallet adjusted successfully.',
-                reference,
-                wallet: {
-                    id: wallet.id,
-                    balanceBefore,
-                    balanceAfter,
-                    adjustment: amount
-                }
-            });
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-
-            res.status(400).json({
-                error: error.message
-            });
-        } finally {
-            client.release();
-        }
+        res.json({
+            message: 'Wallet adjusted.',
+            ...result
+        });
     })
 );
 
-// ------------------------------------------------------------
-// ADMIN DEPOSIT LIST
-// ------------------------------------------------------------
+// ============================================================
+// ADMIN DEPOSITS
+// ============================================================
 
 app.get(
     '/api/admin/deposits',
     adminAuth,
     asyncHandler(async (req, res) => {
-        const status = String(
-            req.query.status || ''
-        ).toUpperCase();
-
-        const allowedStatuses = [
-            'PENDING',
-            'PROCESSING',
-            'COMPLETED',
-            'FAILED',
-            'CANCELLED'
-        ];
-
-        let query = `
-            SELECT
-                d.*,
-                u.full_name,
-                u.email,
-                u.phone AS customer_phone
-            FROM deposits d
-            JOIN users u ON u.id = d.user_id
-        `;
-
-        const params = [];
-
-        if (status) {
-            if (!allowedStatuses.includes(status)) {
-                return res.status(400).json({
-                    error: 'Invalid deposit status.'
-                });
-            }
-
-            query += ' WHERE d.status = $1';
-            params.push(status);
-        }
-
-        query += `
-            ORDER BY d.created_at DESC
-            LIMIT 500
-        `;
-
-        const result = await db.query(query, params);
+        const result = await db.query(
+            `SELECT d.*, u.full_name, u.email
+             FROM deposits d
+             JOIN users u ON u.id = d.user_id
+             ORDER BY d.created_at DESC
+             LIMIT 500`
+        );
 
         res.json({
-            deposits: result.rows
+            deposits: result.rows.map(row => ({
+                ...row,
+                usd_amount: money(row.usd_amount),
+                kes_amount: money(row.kes_amount)
+            }))
         });
     })
 );
 
-// ------------------------------------------------------------
-// ADMIN TRADING HISTORY
-// ------------------------------------------------------------
+// ============================================================
+// ADMIN WITHDRAWALS
+// ============================================================
+
+app.get(
+    '/api/admin/withdrawals',
+    adminAuth,
+    asyncHandler(async (req, res) => {
+        const status = String(req.query.status || '').toUpperCase();
+
+        const allowed = [
+            'PENDING', 'APPROVED', 'REJECTED',
+            'PROCESSING', 'PAID', 'FAILED', 'CANCELLED'
+        ];
+
+        if (status && !allowed.includes(status)) {
+            return res.status(400).json({
+                error: 'Invalid withdrawal status.'
+            });
+        }
+
+        const params = [];
+        let query = `
+            SELECT w.*, u.full_name, u.email,
+                   u.phone AS customer_phone
+            FROM withdrawals w
+            JOIN users u ON u.id = w.user_id
+        `;
+
+        if (status) {
+            params.push(status);
+            query += ` WHERE w.status = $1`;
+        }
+
+        query += ` ORDER BY w.created_at DESC LIMIT 500`;
+
+        const result = await db.query(query, params);
+
+        res.json({
+            withdrawals: result.rows.map(row => ({
+                ...row,
+                amount: money(row.amount),
+                kes_amount: money(row.kes_amount)
+            }))
+        });
+    })
+);
+
+// ============================================================
+// ADMIN APPROVE WITHDRAWAL
+// ============================================================
+
+app.post(
+    '/api/admin/withdrawals/:id/approve',
+    adminAuth,
+    asyncHandler(async (req, res) => {
+        await withTransaction(async client => {
+            const result = await client.query(
+                `SELECT * FROM withdrawals
+                 WHERE id = $1 FOR UPDATE`,
+                [req.params.id]
+            );
+
+            const withdrawal = result.rows[0];
+
+            if (!withdrawal) throw new Error('Withdrawal not found.');
+
+            if (withdrawal.status !== 'PENDING') {
+                throw new Error('Only pending withdrawals can be approved.');
+            }
+
+            await client.query(
+                `UPDATE withdrawals
+                 SET status = 'APPROVED',
+                     reviewed_by = $1,
+                     reviewed_at = NOW(),
+                     admin_note = $2,
+                     updated_at = NOW()
+                 WHERE id = $3`,
+                [
+                    req.admin.id,
+                    req.body.note || 'Withdrawal approved.',
+                    withdrawal.id
+                ]
+            );
+
+            await client.query(
+                `UPDATE transactions
+                 SET status = 'PROCESSING', updated_at = NOW()
+                 WHERE id = $1`,
+                [withdrawal.transaction_id]
+            );
+
+            await logAdminAction(
+                client,
+                req.admin.id,
+                'APPROVE_WITHDRAWAL',
+                'WITHDRAWAL',
+                withdrawal.id,
+                { reference: withdrawal.reference }
+            );
+        });
+
+        res.json({
+            message: 'Withdrawal approved.',
+            status: 'APPROVED'
+        });
+    })
+);
+
+// ============================================================
+// ADMIN REJECT WITHDRAWAL
+// ============================================================
+
+app.post(
+    '/api/admin/withdrawals/:id/reject',
+    adminAuth,
+    asyncHandler(async (req, res) => {
+        const note = String(req.body.note || '').trim();
+
+        if (note.length < 3) {
+            return res.status(400).json({
+                error: 'Provide a rejection reason.'
+            });
+        }
+
+        await withTransaction(async client => {
+            const result = await client.query(
+                `SELECT * FROM withdrawals
+                 WHERE id = $1 FOR UPDATE`,
+                [req.params.id]
+            );
+
+            const withdrawal = result.rows[0];
+
+            if (!withdrawal) throw new Error('Withdrawal not found.');
+
+            if (!['PENDING', 'APPROVED'].includes(withdrawal.status)) {
+                throw new Error('This withdrawal cannot be rejected.');
+            }
+
+            const walletResult = await client.query(
+                `SELECT * FROM wallets
+                 WHERE id = $1 FOR UPDATE`,
+                [withdrawal.wallet_id]
+            );
+
+            const wallet = walletResult.rows[0];
+            const amount = money(withdrawal.amount);
+            const before = money(wallet.balance);
+            const reservedBefore = money(wallet.reserved_balance);
+
+            if (reservedBefore < amount) {
+                throw new Error('Reserved balance is inconsistent.');
+            }
+
+            const after = money(before + amount);
+            const reservedAfter = money(reservedBefore - amount);
+
+            await client.query(
+                `UPDATE wallets
+                 SET balance = $1,
+                     reserved_balance = $2,
+                     updated_at = NOW()
+                 WHERE id = $3`,
+                [after, reservedAfter, wallet.id]
+            );
+
+            await client.query(
+                `UPDATE withdrawals
+                 SET status = 'REJECTED',
+                     reviewed_by = $1,
+                     reviewed_at = NOW(),
+                     admin_note = $2,
+                     updated_at = NOW()
+                 WHERE id = $3`,
+                [req.admin.id, note, withdrawal.id]
+            );
+
+            await client.query(
+                `UPDATE transactions
+                 SET status = 'REJECTED', updated_at = NOW()
+                 WHERE id = $1`,
+                [withdrawal.transaction_id]
+            );
+
+            await insertLedger(client, {
+                walletId: wallet.id,
+                userId: withdrawal.user_id,
+                entryType: 'WITHDRAWAL_RELEASE',
+                reference: withdrawal.reference,
+                idempotencyKey: `WITHDRAWAL_RELEASE_${withdrawal.id}`,
+                amount,
+                balanceBefore: before,
+                balanceAfter: after,
+                reservedBefore,
+                reservedAfter,
+                description: 'Rejected withdrawal funds released'
+            });
+
+            await logAdminAction(
+                client,
+                req.admin.id,
+                'REJECT_WITHDRAWAL',
+                'WITHDRAWAL',
+                withdrawal.id,
+                { note }
+            );
+        });
+
+        res.json({
+            message: 'Withdrawal rejected. Funds returned to customer.'
+        });
+    })
+);
+
+// ============================================================
+// ADMIN MARK WITHDRAWAL PROCESSING
+// ============================================================
+
+app.post(
+    '/api/admin/withdrawals/:id/processing',
+    adminAuth,
+    asyncHandler(async (req, res) => {
+        await withTransaction(async client => {
+            const result = await client.query(
+                `SELECT * FROM withdrawals
+                 WHERE id = $1 FOR UPDATE`,
+                [req.params.id]
+            );
+
+            const withdrawal = result.rows[0];
+
+            if (!withdrawal) throw new Error('Withdrawal not found.');
+
+            if (withdrawal.status !== 'APPROVED') {
+                throw new Error('Only approved withdrawals can be processed.');
+            }
+
+            await client.query(
+                `UPDATE withdrawals
+                 SET status = 'PROCESSING',
+                     admin_note = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [
+                    req.body.note || 'M-Pesa payment being processed.',
+                    withdrawal.id
+                ]
+            );
+
+            await logAdminAction(
+                client,
+                req.admin.id,
+                'PROCESS_WITHDRAWAL',
+                'WITHDRAWAL',
+                withdrawal.id,
+                {}
+            );
+        });
+
+        res.json({
+            message: 'Withdrawal marked as processing.',
+            status: 'PROCESSING'
+        });
+    })
+);
+
+// ============================================================
+// ADMIN CONFIRM MANUAL M-PESA PAYMENT
+// ============================================================
+
+app.post(
+    '/api/admin/withdrawals/:id/paid',
+    adminAuth,
+    asyncHandler(async (req, res) => {
+        const mpesaReference = String(
+            req.body.mpesaReference || ''
+        ).trim();
+
+        if (!mpesaReference) {
+            return res.status(400).json({
+                error: 'Enter the M-Pesa transaction reference.'
+            });
+        }
+
+        await withTransaction(async client => {
+            const result = await client.query(
+                `SELECT * FROM withdrawals
+                 WHERE id = $1 FOR UPDATE`,
+                [req.params.id]
+            );
+
+            const withdrawal = result.rows[0];
+
+            if (!withdrawal) throw new Error('Withdrawal not found.');
+
+            if (!['APPROVED', 'PROCESSING'].includes(withdrawal.status)) {
+                throw new Error('Withdrawal is not ready to be marked paid.');
+            }
+
+            const walletResult = await client.query(
+                `SELECT * FROM wallets
+                 WHERE id = $1 FOR UPDATE`,
+                [withdrawal.wallet_id]
+            );
+
+            const wallet = walletResult.rows[0];
+            const amount = money(withdrawal.amount);
+            const before = money(wallet.balance);
+            const reservedBefore = money(wallet.reserved_balance);
+
+            if (reservedBefore < amount) {
+                throw new Error('Reserved balance is inconsistent.');
+            }
+
+            const reservedAfter = money(reservedBefore - amount);
+
+            await client.query(
+                `UPDATE wallets
+                 SET reserved_balance = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [reservedAfter, wallet.id]
+            );
+
+            await client.query(
+                `UPDATE withdrawals
+                 SET status = 'PAID',
+                     paid_at = NOW(),
+                     admin_note = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [`M-Pesa reference: ${mpesaReference}`, withdrawal.id]
+            );
+
+            await client.query(
+                `UPDATE transactions
+                 SET status = 'COMPLETED',
+                     provider = 'MANUAL_MPESA',
+                     provider_reference = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [mpesaReference, withdrawal.transaction_id]
+            );
+
+            await insertLedger(client, {
+                walletId: wallet.id,
+                userId: withdrawal.user_id,
+                entryType: 'WITHDRAWAL_PAID',
+                reference: withdrawal.reference,
+                idempotencyKey: `WITHDRAWAL_PAID_${withdrawal.id}`,
+                amount: -amount,
+                balanceBefore: before,
+                balanceAfter: before,
+                reservedBefore,
+                reservedAfter,
+                description: `Manual M-Pesa payment ${mpesaReference}`
+            });
+
+            await client.query(
+                `INSERT INTO payment_logs (
+                    withdrawal_id, provider, event_type,
+                    payload, processed
+                 )
+                 VALUES ($1,'MANUAL_MPESA','WITHDRAWAL_PAID',$2,true)`,
+                [
+                    withdrawal.id,
+                    JSON.stringify({
+                        mpesaReference,
+                        adminId: req.admin.id,
+                        amountKES: withdrawal.kes_amount
+                    })
+                ]
+            );
+
+            await logAdminAction(
+                client,
+                req.admin.id,
+                'MARK_WITHDRAWAL_PAID',
+                'WITHDRAWAL',
+                withdrawal.id,
+                { mpesaReference }
+            );
+        });
+
+        res.json({
+            message: 'Withdrawal marked as paid.',
+            status: 'PAID',
+            mpesaReference
+        });
+    })
+);
+
+// ============================================================
+// ADMIN TRADES
+// ============================================================
 
 app.get(
     '/api/admin/trades',
     adminAuth,
     asyncHandler(async (req, res) => {
-        const status = String(
-            req.query.status || ''
-        ).toUpperCase();
+        const status = String(req.query.status || '').toUpperCase();
 
-        const allowedStatuses = [
-            'OPEN',
-            'WON',
-            'LOST',
-            'CANCELLED'
-        ];
+        const allowed = ['OPEN', 'WON', 'LOST', 'CANCELLED'];
 
-        const conditions = [];
+        if (status && !allowed.includes(status)) {
+            return res.status(400).json({
+                error: 'Invalid trade status.'
+            });
+        }
+
         const params = [];
+        const conditions = [];
 
         if (status) {
-            if (!allowedStatuses.includes(status)) {
-                return res.status(400).json({
-                    error: 'Invalid trade status.'
-                });
-            }
-
             params.push(status);
             conditions.push(`t.status = $${params.length}`);
         }
@@ -3448,10 +2852,7 @@ app.get(
         }
 
         let query = `
-            SELECT
-                t.*,
-                u.full_name,
-                u.email
+            SELECT t.*, u.full_name, u.email
             FROM trades t
             JOIN users u ON u.id = t.user_id
         `;
@@ -3460,62 +2861,25 @@ app.get(
             query += ` WHERE ${conditions.join(' AND ')}`;
         }
 
-        query += `
-            ORDER BY t.created_at DESC
-            LIMIT 500
-        `;
+        query += ` ORDER BY t.created_at DESC LIMIT 500`;
 
         const result = await db.query(query, params);
 
         res.json({
-            trades: result.rows
+            trades: result.rows.map(tradeView)
         });
     })
 );
 
-// ------------------------------------------------------------
-// ADMIN ACTIVITY LOGS
-// ------------------------------------------------------------
-
-app.get(
-    '/api/admin/activity',
-    adminAuth,
-    superAdminOnly,
-    asyncHandler(async (req, res) => {
-        const limit = Math.min(
-            Math.max(Number(req.query.limit) || 100, 1),
-            500
-        );
-
-        const result = await db.query(
-            `SELECT
-                l.*,
-                a.email AS admin_email,
-                a.role AS admin_role
-             FROM admin_activity_logs l
-             LEFT JOIN admins a ON a.id = l.admin_id
-             ORDER BY l.created_at DESC
-             LIMIT $1`,
-            [limit]
-        );
-
-        res.json({
-            activity: result.rows
-        });
-    })
-);
-
-// ------------------------------------------------------------
-// ADMIN UPDATE KYC STATUS
-// ------------------------------------------------------------
+// ============================================================
+// ADMIN KYC REVIEW
+// ============================================================
 
 app.post(
     '/api/admin/users/:id/kyc',
     adminAuth,
     asyncHandler(async (req, res) => {
-        const status = String(
-            req.body.status || ''
-        ).toLowerCase();
+        const status = String(req.body.status || '').toLowerCase();
 
         const allowed = [
             'unverified',
@@ -3530,21 +2894,13 @@ app.post(
             });
         }
 
-        const client = await db.pool.connect();
-
-        try {
-            await client.query('BEGIN');
-
+        await withTransaction(async client => {
             const result = await client.query(
                 `UPDATE users
-                 SET kyc_status = $1,
-                     updated_at = NOW()
+                 SET kyc_status = $1, updated_at = NOW()
                  WHERE id = $2
-                 RETURNING id, kyc_status`,
-                [
-                    status,
-                    req.params.id
-                ]
+                 RETURNING id`,
+                [status, req.params.id]
             );
 
             if (!result.rows.length) {
@@ -3559,23 +2915,39 @@ app.post(
                 req.params.id,
                 { status }
             );
+        });
 
-            await client.query('COMMIT');
+        res.json({
+            message: 'KYC status updated.',
+            kycStatus: status
+        });
+    })
+);
 
-            res.json({
-                message: 'KYC status updated.',
-                user: result.rows[0]
-            });
+// ============================================================
+// ADMIN ACTIVITY LOG
+// ============================================================
 
-        } catch (error) {
-            await client.query('ROLLBACK');
+app.get(
+    '/api/admin/activity',
+    adminAuth,
+    superAdminOnly,
+    asyncHandler(async (req, res) => {
+        const limit = Math.min(
+            Math.max(Number(req.query.limit) || 100, 1),
+            500
+        );
 
-            res.status(400).json({
-                error: error.message
-            });
-        } finally {
-            client.release();
-        }
+        const result = await db.query(
+            `SELECT l.*, a.email AS admin_email, a.role AS admin_role
+             FROM admin_activity_logs l
+             LEFT JOIN admins a ON a.id = l.admin_id
+             ORDER BY l.created_at DESC
+             LIMIT $1`,
+            [limit]
+        );
+
+        res.json({ logs: result.rows });
     })
 );
 
@@ -3595,23 +2967,25 @@ app.get('/api/health', asyncHandler(async (req, res) => {
 }));
 
 // ============================================================
-// GLOBAL ERROR HANDLER
+// ERROR HANDLER
 // ============================================================
 
 app.use((err, req, res, next) => {
-    console.error('GTN server error:', err);
+    console.error('GTN backend error:', err.message);
 
-    if (res.headersSent) {
-        return next(err);
-    }
+    if (res.headersSent) return next(err);
 
-    res.status(500).json({
-        error: 'An unexpected server error occurred.'
+    const status = Number(err.status) || 500;
+
+    res.status(status).json({
+        error: status === 500
+            ? 'An internal server error occurred.'
+            : err.message
     });
 });
 
 // ============================================================
-// SERVER STARTUP
+// START SERVER
 // ============================================================
 
 async function startServer() {
@@ -3619,26 +2993,38 @@ async function startServer() {
         await db.testConnection();
 
         server.listen(PORT, () => {
-            console.log('====================================');
-            console.log('GTN BACKEND STARTED');
-            console.log(`HTTP server: http://localhost:${PORT}`);
-            console.log(`WebSocket: ws://localhost:${PORT}`);
-            console.log('PostgreSQL: CONNECTED');
-            console.log('====================================');
+            console.log(`GTN backend running on port ${PORT}`);
+            console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+            console.log('Database: PostgreSQL');
+            console.log('Deposits: Pesapal M-Pesa verification');
+            console.log('Withdrawals: Manual M-Pesa administration');
         });
-
     } catch (error) {
-        console.error(
-            'GTN startup failed:',
-            error.message
-        );
-
+        console.error('GTN startup failed:', error.message);
         process.exit(1);
     }
 }
 
-startServer();
+async function shutdown() {
+    console.log('Shutting down GTN backend...');
 
-// ============================================================
-// END OF PART 4
-// ============================================================
+    clearInterval(marketTimer);
+    clearInterval(settlementTimer);
+
+    wss.close();
+
+    server.close(async () => {
+        try {
+            await db.pool.end();
+        } catch (error) {
+            console.error('Database shutdown error:', error.message);
+        }
+
+        process.exit(0);
+    });
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+startServer();
