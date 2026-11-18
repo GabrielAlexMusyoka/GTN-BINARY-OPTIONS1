@@ -337,11 +337,10 @@ wss.on('connection', (socket) => {
     }));
 });
 
-setInterval(() => {
+const marketInterval = setInterval(() => {
     const ticks = generateMarketTick();
     broadcastTick(ticks);
 }, 1000);
-
 // ============================================================
 // MARKET HELPERS
 // ============================================================
@@ -1424,8 +1423,7 @@ async function settleExpiredTrades() {
     }
 }
 
-setInterval(settleExpiredTrades, 1000);
-
+const settlementInterval = setInterval(settleExpiredTrades, 1000);
 // ============================================================
 // END OF PART 3
 // ============================================================
